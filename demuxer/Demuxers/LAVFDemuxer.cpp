@@ -221,42 +221,29 @@ static std::string BuildASSFromCaption(const aribcc_caption_t &caption)
         if (region.char_count == 0)
             continue;
 
-        // Derive ASS \an alignment from region position.
-        // Regions in the lower half → \an2 (bottom-center), upper half → \an8 (top-center).
-        // Use pixel position to pick alignment tag.
-        int anchorNum = 2; // default: bottom-center
-        if (caption.plane_height > 0 && region.y < (int)(caption.plane_height / 2))
-            anchorNum = 8; // top
+        // ARIB uses absolute left-edge coordinates; all regions use \an1 (bottom-left).
 
         char posBuf[64];
         if (caption.plane_width > 0 && caption.plane_height > 0)
         {
+            // ARIB coordinates are always left-edge of character cell.
+            // Use \an1 (bottom-left) with region.x as the X anchor for all
+            // regions. This matches the per-character fix applied to ruby.
+            int posX = (int)(region.x * 1920.0 / caption.plane_width);
+            int posY = (int)((region.y + region.height) * 1080.0 / caption.plane_height);
+
             if (region.is_ruby && region.char_count > 0)
             {
-                // Ruby (furigana): use bottom-left anchor (\an1) at the first
-                // character's absolute x position. ARIB specifies character
-                // positions as left-edge of each cell; centering on the region
-                // bounding box shifts ruby to the right of its parent chars.
-                const aribcc_caption_char_t &fc = region.chars[0];
-                int posX = (int)(fc.x * 1920.0 / caption.plane_width);
-                int posY = (int)((region.y + region.height) * 1080.0 / caption.plane_height);
-                snprintf(posBuf, sizeof(posBuf), "{\\an1\\pos(%d,%d)}", posX, posY);
+                // For ruby: use the first character's exact x (more accurate
+                // than the region bounding box when chars have inter-char spacing)
+                posX = (int)(region.chars[0].x * 1920.0 / caption.plane_width);
             }
-            else
-            {
-                // Normal text: bottom-center (\an2) or top-center (\an8)
-                double xPct = (region.x + region.width / 2.0) / caption.plane_width;
-                double yPct = (anchorNum == 2)
-                    ? (region.y + region.height) / (double)caption.plane_height
-                    : region.y                   / (double)caption.plane_height;
-                int posX = (int)(xPct * 1920.0);
-                int posY = (int)(yPct * 1080.0);
-                snprintf(posBuf, sizeof(posBuf), "{\\an%d\\pos(%d,%d)}", anchorNum, posX, posY);
-            }
+
+            snprintf(posBuf, sizeof(posBuf), "{\\an1\\pos(%d,%d)}", posX, posY);
         }
         else
         {
-            snprintf(posBuf, sizeof(posBuf), "{\\an%d}", anchorNum);
+            snprintf(posBuf, sizeof(posBuf), "{\\an1}");
         }
 
         if (!result.empty())
