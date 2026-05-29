@@ -231,14 +231,28 @@ static std::string BuildASSFromCaption(const aribcc_caption_t &caption)
         char posBuf[64];
         if (caption.plane_width > 0 && caption.plane_height > 0)
         {
-            // Convert to 1920x1080 reference frame used by ASS
-            double xPct = (region.x + region.width  / 2.0) / caption.plane_width;
-            double yPct = (anchorNum == 2)
-                ? (region.y + region.height) / (double)caption.plane_height
-                : region.y                   / (double)caption.plane_height;
-            int posX = (int)(xPct * 1920.0);
-            int posY = (int)(yPct * 1080.0);
-            snprintf(posBuf, sizeof(posBuf), "{\\an%d\\pos(%d,%d)}", anchorNum, posX, posY);
+            if (region.is_ruby && region.char_count > 0)
+            {
+                // Ruby (furigana): use bottom-left anchor (\an1) at the first
+                // character's absolute x position. ARIB specifies character
+                // positions as left-edge of each cell; centering on the region
+                // bounding box shifts ruby to the right of its parent chars.
+                const aribcc_caption_char_t &fc = region.chars[0];
+                int posX = (int)(fc.x * 1920.0 / caption.plane_width);
+                int posY = (int)((region.y + region.height) * 1080.0 / caption.plane_height);
+                snprintf(posBuf, sizeof(posBuf), "{\\an1\\pos(%d,%d)}", posX, posY);
+            }
+            else
+            {
+                // Normal text: bottom-center (\an2) or top-center (\an8)
+                double xPct = (region.x + region.width / 2.0) / caption.plane_width;
+                double yPct = (anchorNum == 2)
+                    ? (region.y + region.height) / (double)caption.plane_height
+                    : region.y                   / (double)caption.plane_height;
+                int posX = (int)(xPct * 1920.0);
+                int posY = (int)(yPct * 1080.0);
+                snprintf(posBuf, sizeof(posBuf), "{\\an%d\\pos(%d,%d)}", anchorNum, posX, posY);
+            }
         }
         else
         {
