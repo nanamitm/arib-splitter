@@ -251,13 +251,15 @@ class CLAVFDemuxer
     std::map<int, aribcc_context_t *>  m_aribSuperContexts;
     std::map<int, aribcc_decoder_t *>  m_aribSuperDecoders;
 
-    // One buffered packet per ARIB stream: held until the next caption's PTS
-    // is known so we can set an accurate rtStop (prevents subtitles accumulating).
+    // One buffered packet per ARIB stream: held until a later event arrives
+    // so we can set an accurate rtStop (prevents subtitles accumulating).
     std::map<int, Packet *> m_aribPendingPackets;
 
+    // Extra region packets (ruby etc.) stored alongside the pending packet.
+    // Released and rtStop-corrected together with the primary pending packet.
+    std::map<int, std::vector<Packet *>> m_aribPendingExtras;
+
     // Per-region packets waiting to be returned from GetNextPacket.
-    // Multiple regions in one ARIB decode event are queued here so each
-    // gets its own Dialogue event (independent \pos / \an anchors).
     std::deque<Packet *> m_aribRegionQueue;
     time_t m_timeOpening = 0;
 };
