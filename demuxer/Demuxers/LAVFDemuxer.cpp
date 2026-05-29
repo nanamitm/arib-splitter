@@ -223,27 +223,50 @@ static std::string BuildASSFromCaption(const aribcc_caption_t &caption)
 
         // ARIB uses absolute left-edge coordinates; all regions use \an1 (bottom-left).
 
+        // Log all region char positions for diagnosis
+        if (region.char_count > 0)
+        {
+            const aribcc_caption_char_t &fc = region.chars[0];
+            const aribcc_caption_char_t &lc = region.chars[region.char_count - 1];
+            ARIB_LOG("[ARIB] region[%u] is_ruby=%d rx=%d ry=%d rw=%d rh=%d "
+                     "chars=%u firstCh x=%d w=%d h=%d lastCh x=%d w=%d\n",
+                     ri, (int)region.is_ruby,
+                     region.x, region.y, region.width, region.height,
+                     region.char_count,
+                     fc.x, fc.char_width, fc.char_height,
+                     lc.x, lc.char_width);
+        }
+
         char posBuf[64];
         if (caption.plane_width > 0 && caption.plane_height > 0)
         {
-            // ARIB coordinates are always left-edge of character cell.
-            // Use \an1 (bottom-left) with region.x as the X anchor for all
-            // regions. This matches the per-character fix applied to ruby.
-            int posX = (int)(region.x * 1920.0 / caption.plane_width);
             int posY = (int)((region.y + region.height) * 1080.0 / caption.plane_height);
 
             if (region.is_ruby && region.char_count > 0)
             {
-                // For ruby: use the first character's exact x (more accurate
-                // than the region bounding box when chars have inter-char spacing)
-                posX = (int)(region.chars[0].x * 1920.0 / caption.plane_width);
+                // Ruby: bottom-left anchor at the first character's x.
+                int posX = (int)(region.chars[0].x * 1920.0 / caption.plane_width);
+                snprintf(posBuf, sizeof(posBuf), "{\\an1\\pos(%d,%d)}", posX, posY);
             }
-
-            snprintf(posBuf, sizeof(posBuf), "{\\an1\\pos(%d,%d)}", posX, posY);
+            else if (region.y >= caption.plane_height / 2)
+            {
+                // Lower-screen captions: horizontally center at screen center.
+                // ARIB stores absolute coords that include a broadcast-defined
+                // display_area_start_x_ offset not exposed by libaribcaption's
+                // public API. For standard Japanese TV captions (always centered),
+                // \an2\pos(960, posY) gives the correct visual result.
+                snprintf(posBuf, sizeof(posBuf), "{\\an2\\pos(960,%d)}", posY);
+            }
+            else
+            {
+                // Upper-screen captions: use absolute left-edge position.
+                int posX = (int)(region.x * 1920.0 / caption.plane_width);
+                snprintf(posBuf, sizeof(posBuf), "{\\an1\\pos(%d,%d)}", posX, posY);
+            }
         }
         else
         {
-            snprintf(posBuf, sizeof(posBuf), "{\\an1}");
+            snprintf(posBuf, sizeof(posBuf), "{\\an2}");
         }
 
         if (!result.empty())
