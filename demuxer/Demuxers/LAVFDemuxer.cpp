@@ -2055,14 +2055,19 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                     }
                     else
                     {
-                        // NO_CAPTION: release pending if its rtStart has been passed,
-                        // so it's delivered on time rather than waiting for next caption.
+                        // NO_CAPTION: if PTS has advanced more than 5 seconds past
+                        // the pending subtitle's rtStart, release it immediately.
+                        // This prevents late delivery (which causes MPC-BE to discard
+                        // the sample as expired) for long-gap captions like ♬〜.
+                        // Crucially, we do NOT shrink rtStop — we keep the 30s fallback
+                        // so the subtitle shows long enough.
                         aribcc_caption_cleanup(&caption);
                         auto &pendingRef = m_aribPendingPackets[streamIdx];
+                        constexpr REFERENCE_TIME kReleaseThreshold = 5LL * 10000000LL; // 5s
                         if (pendingRef && rt != Packet::INVALID_TIME &&
-                            rt > pendingRef->rtStart)
+                            rt > pendingRef->rtStart + kReleaseThreshold)
                         {
-                            pendingRef->rtStop = (std::min)(pendingRef->rtStop, rt);
+                            // Keep pendingRef->rtStop as-is (the 30s fallback)
                             Packet *p = pendingRef;
                             pendingRef = nullptr;
                             auto eit = m_aribPendingExtras.find(streamIdx);
