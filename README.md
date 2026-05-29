@@ -95,7 +95,16 @@ To unregister:
 uninstall_aribsplitter.bat
 ```
 
-For MPC-BE, add ARIBSplitter as an external filter and prefer it for TS files.
+## MPC-BE Setup
+
+1. Open MPC-BE → **Options** → **External Filters**
+2. Click **Add Filter…** and select **ARIB Splitter Source**
+3. Set the merit to **Prefer**
+4. Click OK and restart MPC-BE
+
+> **ARIB Splitter Source** handles local TS files directly.
+> **ARIB Splitter** (the pure splitter without source) is only needed for
+> network streams where a separate source filter provides the data.
 
 ## Release Package
 
