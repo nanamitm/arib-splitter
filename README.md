@@ -1,145 +1,121 @@
-LAV Filters - ffmpeg based DirectShow Splitter and Decoders
-=============================
+# ARIBSplitter
 
-LAV Filters are a set of DirectShow filters based on the libavformat and libavcodec libraries
-from the ffmpeg project, which will allow you to play virtually any format in a DirectShow player.
+ARIBSplitter is a DirectShow source/splitter filter for MPEG-2 TS files with
+ARIB captions.  It is based on LAV Filters and is intended for use as an
+external filter in players such as MPC-BE.
 
-The filters are still under development, so not every feature is finished, or every format supported.
+The main goal of this fork is to make Japanese broadcast TS files playable
+through DirectShow while exposing ARIB captions as subtitle samples.
 
-Install
------------------------------
-- Unpack
-- Register (install_*.bat files)
-	Registering requires administrative rights, and an elevated shell ("Run as Administrator")
+## Current Scope
 
-Using it
------------------------------
-By default, the splitter will register for all media formats that have been
-tested and found working at least partially.
-This currently includes (but is not limited to)
-	MKV/WebM, AVI, MP4/MOV, TS/M2TS/MPG, FLV, OGG, BluRay (.bdmv and .mpls)
+- MPEG-2 TS source filter registration for `.ts`, `.m2ts`, `.mts`, and `.m2t`
+- ARIB caption decoding through libaribcaption
+- ASS subtitle output for normal captions, multi-region captions, and ruby
+- Caption duration handling for explicit and indefinite captions
+- MPC-BE external filter usage
 
-However, some other splitters register in a "bad" way and force all players
-to use them. The Haali Media Splitter is one of those, and to give priority
-to the LAVFSplitter you have to either uninstall Haali or rename its .ax file
-at least temporarily.
+This repository is still close to the original LAV Filters tree.  Many decoder
+and demuxer files remain from upstream even when ARIBSplitter currently focuses
+on TS splitting and caption delivery.
 
-The Audio and Video Decoder will register with relatively high merit, which should make
-it the preferred decoder by default. Most players offer a way to choose the preferred
-decoder however.
+## Repository Layout
 
-Automatic Stream Selection
------------------------------
-LAV Splitter offers different ways to pre-select streams when opening a file.
-The selection of video streams is not configurable, and LAV Splitter will quite simply
-pick the one with the best quality.
+```text
+common/                 Shared DirectShow/base utility code from LAV Filters
+decoder/                Decoder projects inherited from LAV Filters
+demuxer/Demuxers/       Demuxing code and ARIB caption handling
+demuxer/LAVSplitter/    DirectShow splitter/source filter implementation
+ffmpeg/                 FFmpeg submodule
+libaribcaption/         libaribcaption submodule
+libbluray/              libbluray submodule
+qsdecoder/              Intel Quick Sync decoder submodule
+resources/              Filter resources
+thirdparty/             Prebuilt third-party headers/libraries from upstream
+```
 
-Audio stream selection offers some flexibility, specifically you can configure your preferred languages.
-The language configuration is straightforward. Just enter a list of 3-letter language codes (ISO 639-2),
-separated by comma or space.
+Generated build outputs live under `bin_*` and are intentionally ignored.
+Local Visual Studio state such as `.vs/` is also ignored.
 
-For example: `eng ger fre`. This would try to select a stream matching one of these languages,
-in the order you specified them. First, check if an English track is present, and only if not,
-go to German, and after that, go to French.
+## Submodules
 
-If multiple audio tracks match one language, the choice is based on the quality. The primary attribute here
-is the number of channels, and after that is the codec used. PCM and lossless codecs have a higher priority
-than lossy codecs.
+After cloning, initialize submodules:
 
-Subtitle selection offers the most flexibility.
-There are 4 distinct modes of subtitle selection.
+```bat
+git submodule update --init --recursive
+```
 
-#### No Subtitles
-This mode is simple, by default subtitles will be off.
+The project uses these submodules:
 
-#### Only Forced Subtitles
-This mode will only pre-select subtitles flagged with the "forced" flag. It'll also obey the language preferences, of course.
+- `ffmpeg`
+- `libaribcaption`
+- `libbluray`
+- `qsdecoder`
 
-#### Default
-The default mode will select subtitles matching your language preference. If there is no match, or you didn't configure
-languages, no subtitles will be activated. In addition, subtitles flagged "default" or "forced" will always be used.
+## Build
 
-#### Advanced
-The advanced mode lets you write your own combinations of rules with a special syntax. It also allows selecting subtitles
-based on the audio language of the file.
+The current development build has been tested with Visual Studio/MSBuild on
+Windows x64.
 
-The base syntax is simple, it always requires a pair of audio and subtitle language, separated by a colon, for example: `eng:ger`
-In this example, LAV Splitter would select German subtitles if English audio was found.
+Build libaribcaption first if needed:
 
-Instead of language codes, the advanced mode supports two special cases: `*` and `off`.
-When you specify `*` for a language code, it'll match everything. For example `*:eng`  will activate English subtitles, independent
-of the audio language. The reverse is also possible: `eng:*` will activate any subtitles when the audio is English.
+```bat
+build_libaribcaption.bat
+```
 
-The "off" flag is only valid for the subtitle language, and it instructs LAV Splitter to turn the subtitles off.
-So "eng:off" means that when the audio is English, the subtitles will be deactivated.
+Then build the splitter project from `LAVFilters.sln`, or build
+`demuxer\LAVSplitter\LAVSplitter.vcxproj` directly with MSBuild.
 
-Additionally to the syntax above, the following flags can be appended to the subtitle token separated by a pipe symbol (`|`):
- - `d` for default subtitles
- - `f` for forced subtitles
- - `h` for hearing impaired
- - `n` for normal streams (not default, forced, or impaired).
+Example:
 
-In addition, you can also check for the absence of flags by preceding the flags with a `!`.
-The advanced rules can be combined into a complete logic for subtitle selection by just appending them, separated with a comma or a space.
-The rules will always be parsed from left to right, the first match taking precedence.
+```bat
+msbuild demuxer\LAVSplitter\LAVSplitter.vcxproj /m /p:Configuration=Release /p:Platform=x64 /p:SolutionDir=%CD%\
+```
 
-Finally, the rules can match the name of a stream, with some limitations. Only single words can be matched, as spaces are a separator for the next token.
-A text match can be added to the end of the token with a `@` sign.
+The x64 Release output is written under:
 
-Example: (basic flag usage)
-- `*:*|f`
-  - On any audio language, load any subtitles that are flagged forced.
+```text
+bin_x64\
+```
 
-Example: (basic ruleset)
-- `eng:eng|f eng:ger|f eng:off *:eng *:ger`
-  - If the audio is English, load an English or a German forced subtitle track, otherwise, turn subtitles off.
-  - If the audio is not English, load English or German subtitles.
+## Register
 
-Example: (flag usage with negation)
-- `jpn:ger|d!f`
-  - In the Japanese language, load German subtitles that have the default-flag but not together with forced-flag.
-  - This is useful when you have files where the default and forced flags are set together.
+Register the built filter:
 
-Example: (advanced ruleset for files with multiple audio and subtitle-tracks)
-- `jpn:ger|d!f  jpn:ger|!f  jpn:ger  ger:ger|f  ger:eng|f  ger:*|f`
-  - On Japanese audio, try to load German full subs (default but not forced), then unforced, and at last any german subs if there are no unforced subs.
-  - On German audio load only forced subs in the following order: German, English, any.
+```bat
+install_aribsplitter.bat
+```
 
-Example: (text match)
-- `*:eng@Forced`
-  - On any audio, select english subtitle streams with "Forced" in the stream title.
+The script requests administrator privileges and registers
+`ARIBSplitter.ax` in the same directory when used from a release package.
+In a development checkout, it falls back to `bin_x64\ARIBSplitter.ax`.
+To register the debug build from a development checkout instead:
 
-Blu-ray Support
------------------------------
-To play a BluRay, simply open the index.bdmv file in the BDMV folder on the BluRay disc.
-LAV Splitter will then automatically detect the longest track on the disc (usually the main movie),
-and start playing.
-Alternatively, you can also open a playlist file (*.mpls, located in BDMV/PLAYLIST), and LAV Splitter
-will then play that specific title.
+```bat
+install_aribsplitter.bat debug
+```
 
-In future versions, you'll be able to choose the title from within the player, as well.
+To unregister:
 
-Compiling
------------------------------
-Compiling is pretty straightforward using VS2022 (included project files).
-Older versions of Visual Studio are not officially supported, but may still work.
+```bat
+uninstall_aribsplitter.bat
+```
 
-It does, however, require that you build your own FFmpeg.
-FFmpeg is included as part of the repository in a submodule, pointing to a custom
-fork of FFmpeg with various patches for improved compatibility with LAV and DirectShow.
+For MPC-BE, add ARIBSplitter as an external filter and prefer it for TS files.
 
-A script is provided to compile FFmpeg using MSYS2 with MINGW/GCC or MSVC.
+## Release Package
 
-The custom fork of FFmpeg can be found here:
-https://gitea.1f0.de/LAV/FFmpeg
+Create a release zip from the x64 Release build:
 
-libbluray is compiled with the MSVC project files, however, as with FFmpeg a custom
-version is used, which is also linked as a Git submodule.
+```powershell
+.\make_release_package.ps1 -Version 20260529
+```
 
-You can get find the custom version of libbluray here:
-https://gitea.1f0.de/LAV/libbluray
+The package is written under `dist\` and includes `ARIBSplitter.ax`, required
+runtime DLLs, install/uninstall scripts, `README.md`, `COPYING`, and a small
+`PACKAGE.txt` manifest.
 
-Feedback
------------------------------
-GitHub Project: https://github.com/Nevcairiel/LAVFilters
-Doom9: https://forum.doom9.org/showthread.php?t=156191
+## Notes
+
+ARIBSplitter keeps LAV Filters' original license and upstream structure.  See
+`COPYING` for license details.

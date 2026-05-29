@@ -174,6 +174,7 @@ void CLAVFDemuxer::CleanupAribDecoders()
     for (auto &kv : m_aribPendingPackets)
         delete kv.second;
     m_aribPendingPackets.clear();
+    m_aribPendingExplicitStop.clear();
     for (auto &kv : m_aribPendingExtras)
         for (auto *p : kv.second) delete p;
     m_aribPendingExtras.clear();
@@ -223,32 +224,6 @@ static std::vector<std::string> BuildASSFromCaption(const aribcc_caption_t &capt
     // Build an ASS Dialogue line body from libaribcaption output.
     // We emit one {\an} positioning override + color/size tags per region.
 
-    // First pass: find the main (non-ruby) lower-screen region so we can
-    // compute ruby positions relative to the centered main text.
-    const aribcc_caption_region_t *mainRegion = nullptr;
-    for (uint32_t ri = 0; ri < caption.region_count; ri++)
-    {
-        const aribcc_caption_region_t &r = caption.regions[ri];
-        if (!r.is_ruby && r.char_count > 0 &&
-            caption.plane_height > 0 && r.y >= caption.plane_height / 2)
-        {
-            mainRegion = &r;
-            break;
-        }
-    }
-
-    // Precompute main text centering parameters (used for ruby alignment).
-    int mainPosX = -1;         // display left edge of main text when centered
-    int sectionWidth = 40;     // ARIB char cell width (char_w + h_spacing)
-    int charDisplayWidth = 72; // display pixels per char (char_w * 1920/plane_w)
-    if (mainRegion && mainRegion->char_count > 0 && caption.plane_width > 0)
-    {
-        const aribcc_caption_char_t &fc = mainRegion->chars[0];
-        charDisplayWidth = (int)(fc.char_width * 1920.0 / caption.plane_width);
-        sectionWidth = fc.char_width + fc.char_horizontal_spacing;
-        mainPosX = 960 - (int)(mainRegion->char_count * charDisplayWidth / 2);
-    }
-
     std::vector<std::string> results; // one entry per region
     for (uint32_t ri = 0; ri < caption.region_count; ri++)
     {
@@ -279,35 +254,10 @@ static std::vector<std::string> BuildASSFromCaption(const aribcc_caption_t &capt
         {
             int posY = (int)((region.y + region.height) * 1080.0 / caption.plane_height);
 
-            if (region.is_ruby && region.char_count > 0)
-            {
-                // Ruby: compute X from the centered main text position.
-                // When main text uses \an2\pos(960), we reverse-calculate where
-                // the target kanji is in display coords, then left-align ruby there.
-                int posX;
-                if (mainPosX >= 0 && mainRegion && sectionWidth > 0)
-                {
-                    // How many char cells from main text start to first ruby char
-                    int rubyOffset = (region.chars[0].x - mainRegion->x) / sectionWidth;
-                    posX = mainPosX + rubyOffset * charDisplayWidth;
-                }
-                else
-                {
-                    posX = (int)(region.chars[0].x * 1920.0 / caption.plane_width);
-                }
-                snprintf(posBuf, sizeof(posBuf), "{\\an1\\pos(%d,%d)}", posX, posY);
-            }
-            else if (region.y >= caption.plane_height / 2)
-            {
-                // Lower-screen captions: center at screen midpoint.
-                snprintf(posBuf, sizeof(posBuf), "{\\an2\\pos(960,%d)}", posY);
-            }
-            else
-            {
-                // Upper-screen captions: use absolute left-edge position.
-                int posX = (int)(region.x * 1920.0 / caption.plane_width);
-                snprintf(posBuf, sizeof(posBuf), "{\\an1\\pos(%d,%d)}", posX, posY);
-            }
+            // Use ARIB absolute left-edge position for every region, including
+            // ruby. libaribcaption already resolves the ruby region's target X.
+            int posX = (int)(region.x * 1920.0 / caption.plane_width);
+            snprintf(posBuf, sizeof(posBuf), "{\\an1\\pos(%d,%d)}", posX, posY);
         }
         else
         {
@@ -1956,10 +1906,16 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                     {
                         // Compute stop time before cleanup
                         REFERENCE_TIME rtNewStop;
-                        if (caption.wait_duration != ARIBCC_DURATION_INDEFINITE && caption.wait_duration > 0)
+                        constexpr REFERENCE_TIME kIndefiniteChunk = 10LL * 10000000LL; // 10s
+                        bool hasExplicitStop =
+                            caption.wait_duration != ARIBCC_DURATION_INDEFINITE && caption.wait_duration > 0;
+                        if (hasExplicitStop)
                             rtNewStop = pPacket->rtStart + caption.wait_duration * 10000LL;
                         else
-                            rtNewStop = pPacket->rtStart + 30LL * 10000000LL; // 30s fallback
+                            rtNewStop = pPacket->rtStart + kIndefiniteChunk;
+                        ARIB_LOG("[ARIB] caption timing flags=0x%x wait=%lld start=%lld stop=%lld\n",
+                                 (unsigned)caption.flags, (long long)caption.wait_duration,
+                                 (long long)pPacket->rtStart, (long long)rtNewStop);
 
                         std::vector<std::string> regionTexts = BuildASSFromCaption(caption);
                         aribcc_caption_cleanup(&caption);
@@ -1979,7 +1935,26 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                             Packet *p = it->second;
                             it->second = nullptr;
                             m_aribPendingPackets.erase(it);
-                            p->rtStop = (std::min)(p->rtStop, stopBound);
+                            bool explicitStop = false;
+                            auto xit = m_aribPendingExplicitStop.find(sid);
+                            if (xit != m_aribPendingExplicitStop.end())
+                            {
+                                explicitStop = xit->second;
+                                m_aribPendingExplicitStop.erase(xit);
+                            }
+                            if (stopBound <= p->rtStart)
+                            {
+                                delete p;
+                                auto eit = m_aribPendingExtras.find(sid);
+                                if (eit != m_aribPendingExtras.end())
+                                {
+                                    for (auto *ep : eit->second)
+                                        delete ep;
+                                    eit->second.clear();
+                                }
+                                return nullptr;
+                            }
+                            p->rtStop = explicitStop ? (std::min)(p->rtStop, stopBound) : stopBound;
 
                             // Also release any extra regions stored with this pending
                             auto eit = m_aribPendingExtras.find(sid);
@@ -1993,6 +1968,23 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                                 eit->second.clear();
                             }
                             return p;
+                        };
+
+                        auto clonePacket = [](Packet *src) -> Packet *
+                        {
+                            if (!src)
+                                return nullptr;
+                            Packet *copy = new Packet();
+                            if (!copy)
+                                return nullptr;
+                            copy->CopyProperties(src);
+                            if (src->GetDataSize() > 0 &&
+                                copy->SetData(src->GetData(), src->GetDataSize()) < 0)
+                            {
+                                delete copy;
+                                return nullptr;
+                            }
+                            return copy;
                         };
 
                         static LONG s_readOrder = 0;
@@ -2009,7 +2001,7 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                             // Release previous pending (corrected rtStop = this event's start)
                             toDeliver = flushPending(streamIdx, pPacket->rtStart);
 
-                            // Build region 0 → goes into pending buffer
+                            // Build region 0.
                             {
                                 LONG ro = InterlockedIncrement(&s_readOrder);
                                 char roPrefix[32];
@@ -2019,10 +2011,8 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                                 pPacket->SetData(payload.c_str(), (int)payload.size());
                                 pPacket->dwFlags |= LAV_PACKET_PARSED;
                             }
-                            m_aribPendingPackets[streamIdx] = pPacket;
-                            pPacket = nullptr;
 
-                            // Build regions 1..N → stored in pending extras
+                            std::vector<Packet *> currentExtras;
                             auto &extras = m_aribPendingExtras[streamIdx];
                             for (auto *ep : extras) delete ep;
                             extras.clear();
@@ -2031,8 +2021,8 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                                 Packet *rPkt = new Packet();
                                 if (!rPkt) break;
                                 rPkt->StreamId = (DWORD)streamIdx;
-                                rPkt->rtStart = m_aribPendingPackets[streamIdx]->rtStart;
-                                rPkt->rtStop  = m_aribPendingPackets[streamIdx]->rtStop;
+                                rPkt->rtStart = pPacket->rtStart;
+                                rPkt->rtStop  = pPacket->rtStop;
                                 rPkt->bDiscontinuity = TRUE;
                                 rPkt->dwFlags = LAV_PACKET_PARSED;
                                 LONG ro = InterlockedIncrement(&s_readOrder);
@@ -2040,7 +2030,32 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                                 snprintf(roPrefix, sizeof(roPrefix), "%ld,0,Default,,0,0,0,,", ro);
                                 std::string payload = roPrefix + regionTexts[ri];
                                 rPkt->SetData(payload.c_str(), (int)payload.size());
-                                extras.push_back(rPkt);
+                                currentExtras.push_back(rPkt);
+                            }
+
+                            if (hasExplicitStop)
+                            {
+                                Packet *current = pPacket;
+                                pPacket = nullptr;
+                                if (toDeliver)
+                                {
+                                    m_aribRegionQueue.push_back(current);
+                                    for (auto *ep : currentExtras)
+                                        m_aribRegionQueue.push_back(ep);
+                                }
+                                else
+                                {
+                                    pPacket = current;
+                                    for (auto *ep : currentExtras)
+                                        m_aribRegionQueue.push_back(ep);
+                                }
+                            }
+                            else
+                            {
+                                m_aribPendingPackets[streamIdx] = pPacket;
+                                m_aribPendingExplicitStop[streamIdx] = false;
+                                pPacket = nullptr;
+                                extras.swap(currentExtras);
                             }
                         }
 
@@ -2048,40 +2063,76 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                         {
                             pPacket = toDeliver;
                         }
-                        else
+                        else if (!pPacket)
                         {
                             return S_FALSE;
                         }
                     }
                     else
                     {
-                        // NO_CAPTION: if PTS has advanced more than 5 seconds past
-                        // the pending subtitle's rtStart, release it immediately.
-                        // This prevents late delivery (which causes MPC-BE to discard
-                        // the sample as expired) for long-gap captions like ♬〜.
-                        // Crucially, we do NOT shrink rtStop — we keep the 30s fallback
-                        // so the subtitle shows long enough.
+                        // NO_CAPTION packets can appear repeatedly while an indefinite
+                        // ARIB caption should remain on screen. If the current PTS has
+                        // crossed the pending chunk boundary, resend the same payload as
+                        // the next timed chunk so MPC-BE receives samples before they are
+                        // already stale.
                         aribcc_caption_cleanup(&caption);
                         auto &pendingRef = m_aribPendingPackets[streamIdx];
-                        constexpr REFERENCE_TIME kReleaseThreshold = 5LL * 10000000LL; // 5s
-                        if (pendingRef && rt != Packet::INVALID_TIME &&
-                            rt > pendingRef->rtStart + kReleaseThreshold)
+                        auto xit = m_aribPendingExplicitStop.find(streamIdx);
+                        bool explicitStop = (xit != m_aribPendingExplicitStop.end() && xit->second);
+                        if (pendingRef && !explicitStop && rt != Packet::INVALID_TIME &&
+                            pendingRef->rtStop != Packet::INVALID_TIME && rt >= pendingRef->rtStop)
                         {
-                            // Keep pendingRef->rtStop as-is (the 30s fallback)
-                            Packet *p = pendingRef;
-                            pendingRef = nullptr;
+                            constexpr REFERENCE_TIME kIndefiniteChunk = 10LL * 10000000LL; // 10s
+                            auto clonePacket = [](Packet *src) -> Packet *
+                            {
+                                if (!src)
+                                    return nullptr;
+                                Packet *copy = new Packet();
+                                if (!copy)
+                                    return nullptr;
+                                copy->CopyProperties(src);
+                                if (src->GetDataSize() > 0 &&
+                                    copy->SetData(src->GetData(), src->GetDataSize()) < 0)
+                                {
+                                    delete copy;
+                                    return nullptr;
+                                }
+                                return copy;
+                            };
+
+                            Packet *deliver = pendingRef;
+                            pendingRef = clonePacket(deliver);
+                            if (pendingRef)
+                            {
+                                pendingRef->rtStart = deliver->rtStop;
+                                pendingRef->rtStop = pendingRef->rtStart + kIndefiniteChunk;
+                                pendingRef->bDiscontinuity = TRUE;
+                            }
+
                             auto eit = m_aribPendingExtras.find(streamIdx);
                             if (eit != m_aribPendingExtras.end())
                             {
+                                std::vector<Packet *> nextExtras;
                                 for (auto *ep : eit->second)
                                 {
-                                    ep->rtStop = p->rtStop;
+                                    Packet *nextExtra = clonePacket(ep);
+                                    if (nextExtra && pendingRef)
+                                    {
+                                        nextExtra->rtStart = pendingRef->rtStart;
+                                        nextExtra->rtStop = pendingRef->rtStop;
+                                        nextExtras.push_back(nextExtra);
+                                    }
+                                    else
+                                    {
+                                        delete nextExtra;
+                                    }
                                     m_aribRegionQueue.push_back(ep);
                                 }
-                                eit->second.clear();
+                                eit->second.swap(nextExtras);
                             }
+
                             SAFE_DELETE(pPacket);
-                            pPacket = p;
+                            pPacket = deliver;
                         }
                         else
                         {
@@ -2344,6 +2395,7 @@ retry:
     for (auto &kv : m_aribPendingPackets)
         delete kv.second;
     m_aribPendingPackets.clear();
+    m_aribPendingExplicitStop.clear();
     for (auto &kv : m_aribPendingExtras)
         for (auto *p : kv.second) delete p;
     m_aribPendingExtras.clear();

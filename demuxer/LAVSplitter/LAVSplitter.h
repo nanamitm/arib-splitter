@@ -351,7 +351,7 @@ class __declspec(uuid("1AA767C2-BF31-4791-B65A-474678685956")) CLAVSplitter
     CBaseTrayIcon *m_pTrayIcon = nullptr;
 };
 
-class __declspec(uuid("DB05F97C-F39C-417C-8011-33D093234F1A")) CLAVSplitterSource : public CLAVSplitter
+class __declspec(uuid("DB05F97C-F39C-417C-8011-33D093234F1A")) CLAVSplitterSource : public CLAVSplitter, public IAMFilterMiscFlags
 {
   public:
     // construct only via class factory
@@ -361,4 +361,5 @@ class __declspec(uuid("DB05F97C-F39C-417C-8011-33D093234F1A")) CLAVSplitterSourc
     // IUnknown
     DECLARE_IUNKNOWN;
     STDMETHODIMP NonDelegatingQueryInterface(REFIID riid, void **ppv);
+    STDMETHODIMP_(ULONG) GetMiscFlags() { return AM_FILTER_MISC_FLAGS_IS_SOURCE; }
 };

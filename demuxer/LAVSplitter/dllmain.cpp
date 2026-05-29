@@ -85,6 +85,114 @@ const AMOVIESETUP_FILTER sudFilterRegSource = {&__uuidof(CLAVSplitterSource), //
                                                sudOutputPins,                 // list of pins to register
                                                CLSID_LegacyAmFilterCategory};
 
+static const LPCWSTR kTsExtensions[] = {
+    L".ts",
+    L".m2ts",
+    L".mts",
+    L".m2t",
+};
+
+static HRESULT RegisterExtensionSourceFilter(LPCWSTR ext, REFCLSID clsid)
+{
+    WCHAR clsidStr[64] = {};
+    if (StringFromGUID2(clsid, clsidStr, ARRAYSIZE(clsidStr)) == 0)
+        return E_FAIL;
+
+    WCHAR keyPath[MAX_PATH] = {};
+    swprintf_s(keyPath, ARRAYSIZE(keyPath), L"Media Type\\Extensions\\%s", ext);
+
+    HKEY hKey = nullptr;
+    LONG r = RegCreateKeyExW(HKEY_CLASSES_ROOT, keyPath, 0, nullptr,
+                             REG_OPTION_NON_VOLATILE, KEY_SET_VALUE, nullptr, &hKey, nullptr);
+    if (r != ERROR_SUCCESS)
+        return HRESULT_FROM_WIN32(r);
+
+    r = RegSetValueExW(hKey, L"Source Filter", 0, REG_SZ,
+                       reinterpret_cast<const BYTE *>(clsidStr),
+                       static_cast<DWORD>((wcslen(clsidStr) + 1) * sizeof(WCHAR)));
+    RegCloseKey(hKey);
+    return HRESULT_FROM_WIN32(r);
+}
+
+static void UnregisterExtensionSourceFilter(LPCWSTR ext, REFCLSID clsid)
+{
+    WCHAR clsidStr[64] = {};
+    if (StringFromGUID2(clsid, clsidStr, ARRAYSIZE(clsidStr)) == 0)
+        return;
+
+    WCHAR keyPath[MAX_PATH] = {};
+    swprintf_s(keyPath, ARRAYSIZE(keyPath), L"Media Type\\Extensions\\%s", ext);
+
+    HKEY hKey = nullptr;
+    LONG r = RegOpenKeyExW(HKEY_CLASSES_ROOT, keyPath, 0, KEY_QUERY_VALUE | KEY_SET_VALUE, &hKey);
+    if (r != ERROR_SUCCESS)
+        return;
+
+    WCHAR current[64] = {};
+    DWORD type = 0;
+    DWORD bytes = sizeof(current);
+    r = RegQueryValueExW(hKey, L"Source Filter", nullptr, &type, reinterpret_cast<BYTE *>(current), &bytes);
+    if (r == ERROR_SUCCESS && type == REG_SZ && _wcsicmp(current, clsidStr) == 0)
+        RegDeleteValueW(hKey, L"Source Filter");
+
+    RegCloseKey(hKey);
+}
+
+static void UnregisterStreamSourceFilterIfOwned(REFGUID subtype, REFCLSID clsid)
+{
+    WCHAR clsidStr[64] = {};
+    if (StringFromGUID2(clsid, clsidStr, ARRAYSIZE(clsidStr)) == 0)
+        return;
+
+    WCHAR majortypeStr[64] = {};
+    WCHAR subtypeStr[64] = {};
+    if (StringFromGUID2(MEDIATYPE_Stream, majortypeStr, ARRAYSIZE(majortypeStr)) == 0 ||
+        StringFromGUID2(subtype, subtypeStr, ARRAYSIZE(subtypeStr)) == 0)
+        return;
+
+    WCHAR keyPath[MAX_PATH] = {};
+    swprintf_s(keyPath, ARRAYSIZE(keyPath), L"Media Type\\%s\\%s", majortypeStr, subtypeStr);
+
+    HKEY hKey = nullptr;
+    LONG r = RegOpenKeyExW(HKEY_CLASSES_ROOT, keyPath, 0, KEY_QUERY_VALUE, &hKey);
+    if (r != ERROR_SUCCESS)
+        return;
+
+    WCHAR current[64] = {};
+    DWORD type = 0;
+    DWORD bytes = sizeof(current);
+    r = RegQueryValueExW(hKey, L"Source Filter", nullptr, &type, reinterpret_cast<BYTE *>(current), &bytes);
+    RegCloseKey(hKey);
+
+    if (r == ERROR_SUCCESS && type == REG_SZ && _wcsicmp(current, clsidStr) == 0)
+        RegDeleteTreeW(HKEY_CLASSES_ROOT, keyPath);
+}
+
+static HRESULT RegisterTsSourceFilters()
+{
+    std::list<LPCWSTR> chkbytes;
+    chkbytes.push_back(L"0,1,,47");
+    chkbytes.push_back(L"188,1,,47");
+    chkbytes.push_back(L"376,1,,47");
+    RegisterSourceFilter(__uuidof(CLAVSplitterSource), MEDIASUBTYPE_MPEG2_TRANSPORT,
+                         chkbytes, L".ts", L".m2ts", L".mts", L".m2t", nullptr);
+
+    HRESULT hr = S_OK;
+    for (LPCWSTR ext : kTsExtensions)
+    {
+        HRESULT hrExt = RegisterExtensionSourceFilter(ext, __uuidof(CLAVSplitterSource));
+        if (FAILED(hrExt) && SUCCEEDED(hr))
+            hr = hrExt;
+    }
+    return hr;
+}
+
+static void UnregisterTsSourceFilters()
+{
+    for (LPCWSTR ext : kTsExtensions)
+        UnregisterExtensionSourceFilter(ext, __uuidof(CLAVSplitterSource));
+    UnregisterStreamSourceFilterIfOwned(MEDIASUBTYPE_MPEG2_TRANSPORT, __uuidof(CLAVSplitterSource));
+}
 // --- COM factory table and registration code --------------
 
 // DirectShow base class COM factory requires this table,
@@ -104,22 +212,19 @@ int g_cTemplates = sizeof(g_Templates) / sizeof(g_Templates[0]);
 // self-registration entrypoint
 STDAPI DllRegisterServer()
 {
-    std::list<LPCWSTR> chkbytes;
-
-    // BluRay
-    chkbytes.clear();
-    chkbytes.push_back(L"0,4,,494E4458"); // INDX (index.bdmv)
-    chkbytes.push_back(L"0,4,,4D4F424A"); // MOBJ (MovieObject.bdmv)
-    chkbytes.push_back(L"0,4,,4D504C53"); // MPLS
-    RegisterSourceFilter(__uuidof(CLAVSplitterSource), MEDIASUBTYPE_LAVBluRay, chkbytes, nullptr);
-
     // base classes will handle registration using the factory template table
-    return AMovieDllRegisterServer2(true);
+    HRESULT hr = AMovieDllRegisterServer2(true);
+    if (FAILED(hr))
+        return hr;
+
+    // Write TS source mappings last, because generic filter registration may
+    // recreate extension keys while registering the factory template table.
+    return RegisterTsSourceFilters();
 }
 
 STDAPI DllUnregisterServer()
 {
-    UnRegisterSourceFilter(MEDIASUBTYPE_LAVBluRay);
+    UnregisterTsSourceFilters();
 
     // base classes will handle de-registration using the factory template table
     return AMovieDllRegisterServer2(false);

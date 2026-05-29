@@ -974,8 +974,19 @@ HRESULT CLAVSplitter::DeliverPacket(Packet *pPacket)
 
     BOOL bDiscontinuity = pPacket->bDiscontinuity;
     DWORD streamId = pPacket->StreamId;
+    if (pPin->IsSubtitlePin())
+    {
+        AribDbgLog("[ARIB] DeliverPacket queue subtitle stream=%lu size=%d start=%lld stop=%lld disc=%d connected=%d\n",
+                   streamId, pPacket->GetDataSize(), (long long)pPacket->rtStart,
+                   (long long)pPacket->rtStop, (int)bDiscontinuity, (int)pPin->IsConnected());
+    }
 
     hr = pPin->QueuePacket(pPacket);
+    if (pPin->IsSubtitlePin())
+    {
+        AribDbgLog("[ARIB] DeliverPacket queue result stream=%lu hr=0x%08X\n",
+                   streamId, (unsigned)hr);
+    }
 
     if (hr != S_OK)
     {
@@ -2260,5 +2271,5 @@ STDMETHODIMP CLAVSplitterSource::NonDelegatingQueryInterface(REFIID riid, void *
 
     *ppv = nullptr;
 
-    return QI(IFileSourceFilter) QI(IURLSourceFilterLAV) QI(IAMOpenProgress) __super::NonDelegatingQueryInterface(riid, ppv);
+    return QI(IFileSourceFilter) QI(IURLSourceFilterLAV) QI(IAMOpenProgress) QI(IAMFilterMiscFlags) __super::NonDelegatingQueryInterface(riid, ppv);
 }

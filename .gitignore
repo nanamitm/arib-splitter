@@ -6,8 +6,20 @@
 *.aps
 *.db
 *.opendb
+*.VC.db*
+*.pdb
+*.pch
+*.ipch
+*.iobj
+*.ipdb
+*.tlog
+*.lastbuildstate
+*.log
 
 /ipch
 /bin_*
+/dist
 /common/includes/version_rev.h
 /.vs
+/thirdparty/zlib-*/
+/thirdparty/zlib-build-*/

@@ -254,6 +254,7 @@ class CLAVFDemuxer
     // One buffered packet per ARIB stream: held until a later event arrives
     // so we can set an accurate rtStop (prevents subtitles accumulating).
     std::map<int, Packet *> m_aribPendingPackets;
+    std::map<int, bool> m_aribPendingExplicitStop;
 
     // Extra region packets (ruby etc.) stored alongside the pending packet.
     // Released and rtStop-corrected together with the primary pending packet.

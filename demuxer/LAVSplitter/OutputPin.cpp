@@ -28,6 +28,12 @@
 
 #include "PacketAllocator.h"
 
+#ifdef ARIB_DEBUG_LOG
+extern void AribDbgLog(const char *fmt, ...);
+#else
+static inline void AribDbgLog(const char *, ...) {}
+#endif
+
 CLAVOutputPin::CLAVOutputPin(std::deque<CMediaType> &mts, LPCWSTR pName, CBaseFilter *pFilter, CCritSec *pLock,
                              HRESULT *phr, CBaseDemuxer::StreamType pinType, const char *container)
     : CBaseOutputPin(NAME("lavf dshow output pin"), pFilter, pLock, phr, pName)
@@ -586,8 +592,14 @@ HRESULT CLAVOutputPin::DeliverPacket(Packet *pPacket)
     CHECK_HR(hr = pSample->SetSyncPoint(pPacket->bSyncPoint));
     CHECK_HR(hr = pSample->SetPreroll(fTimeValid && pPacket->rtStart < 0));
     // Deliver
-    CHECK_HR(hr = Deliver(pSample));
-
+    hr = Deliver(pSample);
+    if (IsSubtitlePin())
+    {
+        AribDbgLog("[ARIB] OutputPin Deliver subtitle hr=0x%08X size=%ld start=%lld stop=%lld disc=%d sync=%d\n",
+                   (unsigned)hr, nBytes, (long long)pPacket->rtStart, (long long)pPacket->rtStop,
+                   (int)pPacket->bDiscontinuity, (int)pPacket->bSyncPoint);
+    }
+    CHECK_HR(hr);
 done:
     if (!m_bPacketAllocator || !pSample)
         SAFE_DELETE(pPacket);
