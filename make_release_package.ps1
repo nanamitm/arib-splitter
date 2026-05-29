@@ -16,6 +16,7 @@ $zipPath = Join-Path $distRoot "$packageName.zip"
 
 $payload = @(
     "ARIBSplitter.ax",
+    "LAVFilters.Dependencies.manifest",
     "avformat-lav-62.dll",
     "avcodec-lav-62.dll",
     "avutil-lav-60.dll",
