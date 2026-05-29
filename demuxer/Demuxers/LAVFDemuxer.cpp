@@ -170,6 +170,10 @@ void CLAVFDemuxer::CleanupAribDecoders()
     for (auto &kv : m_aribSuperContexts)
         aribcc_context_free(kv.second);
     m_aribSuperContexts.clear();
+
+    for (auto &kv : m_aribPendingPackets)
+        delete kv.second;
+    m_aribPendingPackets.clear();
 }
 
 aribcc_decoder_t *CLAVFDemuxer::GetOrCreateAribDecoder(int streamIndex, bool superimpose)
@@ -1868,30 +1872,69 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
 
                     if (status == ARIBCC_DECODE_STATUS_GOT_CAPTION)
                     {
+                        // Compute stop time before cleanup
+                        REFERENCE_TIME rtNewStop;
+                        if (caption.wait_duration != ARIBCC_DURATION_INDEFINITE && caption.wait_duration > 0)
+                            rtNewStop = pPacket->rtStart + caption.wait_duration * 10000LL;
+                        else
+                            rtNewStop = pPacket->rtStart + 30LL * 10000000LL; // 30s fallback
+
                         std::string assText = BuildASSFromCaption(caption);
+                        aribcc_caption_cleanup(&caption);
 
                         ARIB_LOG("[ARIB] assText(%zu): %s\n", assText.size(),
                                  assText.empty() ? "(empty)" : assText.substr(0, 120).c_str());
 
-                        // Set stop time
-                        if (caption.wait_duration != ARIBCC_DURATION_INDEFINITE && caption.wait_duration > 0)
-                            pPacket->rtStop = pPacket->rtStart + caption.wait_duration * 10000LL;
+                        // Buffering to prevent subtitle accumulation:
+                        // Hold each packet until the next event arrives so we can set
+                        // an accurate rtStop (= next event's rtStart).
+                        auto &pendingRef = m_aribPendingPackets[streamIdx];
+                        Packet *toDeliver = nullptr;
+
+                        if (assText.empty())
+                        {
+                            // Clear-screen event: finalize pending with corrected stop time
+                            if (pendingRef)
+                            {
+                                pendingRef->rtStop = (std::min)(pendingRef->rtStop, pPacket->rtStart);
+                                toDeliver = pendingRef;
+                                pendingRef = nullptr;
+                            }
+                            SAFE_DELETE(pPacket);
+                        }
                         else
-                            pPacket->rtStop = pPacket->rtStart + 30LL * 10000000LL; // 30s fallback
+                        {
+                            // Build the new packet payload
+                            static LONG s_readOrder = 0;
+                            LONG ro = InterlockedIncrement(&s_readOrder);
+                            char roPrefix[32];
+                            snprintf(roPrefix, sizeof(roPrefix), "%ld,0,Default,,0,0,0,,", ro);
+                            std::string payload = roPrefix;
+                            payload += assText;
 
-                        // Full ASS dialogue line body (without Start/End - timing via IMediaSample):
-                        // "ReadOrder,Layer,Style,Name,MarginL,MarginR,MarginV,Effect,Text"
-                        // This matches mmts-dsfilter's convention.
-                        static LONG s_readOrder = 0;
-                        LONG ro = InterlockedIncrement(&s_readOrder);
-                        char roPrefix[32];
-                        snprintf(roPrefix, sizeof(roPrefix), "%ld,0,Default,,0,0,0,,", ro);
-                        std::string payload = roPrefix;
-                        payload += assText;
+                            pPacket->rtStop = rtNewStop;
+                            pPacket->SetData(payload.c_str(), (int)payload.size());
+                            pPacket->dwFlags |= LAV_PACKET_PARSED;
 
-                        pPacket->SetData(payload.c_str(), (int)payload.size());
-                        pPacket->dwFlags |= LAV_PACKET_PARSED;
-                        aribcc_caption_cleanup(&caption);
+                            if (pendingRef)
+                            {
+                                // Finalize previous pending with this event's start time
+                                pendingRef->rtStop = (std::min)(pendingRef->rtStop, pPacket->rtStart);
+                                toDeliver = pendingRef;
+                            }
+                            // Buffer the new packet
+                            pendingRef = pPacket;
+                            pPacket = nullptr;
+                        }
+
+                        if (toDeliver)
+                        {
+                            pPacket = toDeliver;
+                        }
+                        else
+                        {
+                            return S_FALSE;
+                        }
                     }
                     else
                     {
@@ -2146,11 +2189,14 @@ retry:
     // Flush MVC extensions on seek (no-op if empty)
     FlushMVCExtensionQueue();
 
-    // Flush ARIB decoders on seek
+    // Flush ARIB decoders and pending packets on seek
     for (auto &kv : m_aribDecoders)
         aribcc_decoder_flush(kv.second);
     for (auto &kv : m_aribSuperDecoders)
         aribcc_decoder_flush(kv.second);
+    for (auto &kv : m_aribPendingPackets)
+        delete kv.second;
+    m_aribPendingPackets.clear();
 
     return S_OK;
 }

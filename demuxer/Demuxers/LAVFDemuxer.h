@@ -250,5 +250,9 @@ class CLAVFDemuxer
     std::map<int, aribcc_decoder_t *>  m_aribDecoders;
     std::map<int, aribcc_context_t *>  m_aribSuperContexts;
     std::map<int, aribcc_decoder_t *>  m_aribSuperDecoders;
+
+    // One buffered packet per ARIB stream: held until the next caption's PTS
+    // is known so we can set an accurate rtStop (prevents subtitles accumulating).
+    std::map<int, Packet *> m_aribPendingPackets;
     time_t m_timeOpening = 0;
 };
