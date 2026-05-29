@@ -45,6 +45,7 @@ jobs:
           update: true
           install: >-
             mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-binutils
             mingw-w64-x86_64-nasm
             mingw-w64-x86_64-pkg-config
             mingw-w64-x86_64-zlib
@@ -52,9 +53,29 @@ jobs:
             make
             diffutils
 
+      - name: Ensure cross-prefix tools are available
+        shell: msys2 {0}
+        run: |
+          # FFmpeg configure uses --cross-prefix=x86_64-w64-mingw32-
+          # These symlinks should already exist via mingw-w64-x86_64-binutils,
+          # but create them explicitly as a fallback.
+          for t in nm ar ranlib strip as dlltool; do
+            dst="/mingw64/bin/x86_64-w64-mingw32-${t}.exe"
+            src="/mingw64/bin/${t}.exe"
+            [ -e "$dst" ] || ( [ -e "$src" ] && ln -sf "$src" "$dst" )
+          done
+          x86_64-w64-mingw32-nm --version
+
       - name: Build FFmpeg x64
         shell: msys2 {0}
-        run: sh build_ffmpeg.sh x64
+        run: |
+          sh build_ffmpeg.sh x64
+          if [ ! -f ffmpeg/libavutil/avconfig.h ]; then
+            echo "::error::avconfig.h not found - FFmpeg configure failed"
+            echo "=== configure output ==="
+            cat ffmpeg/ffbuild/config.out || true
+            exit 1
+          fi
 
       # ---------- libaribcaption (CMake / MSVC) ----------
 
