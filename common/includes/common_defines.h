@@ -34,4 +34,4 @@
 
 #define LAV_AUDIO "LAV Audio Decoder"
 #define LAV_VIDEO "LAV Video Decoder"
-#define LAV_SPLITTER "LAV Splitter"
+#define LAV_SPLITTER "ARIB Splitter"

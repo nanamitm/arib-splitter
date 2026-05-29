@@ -750,6 +750,7 @@ static FormatMapping subtitle_format_map[] = {
     { AV_CODEC_ID_DVD_SUBTITLE,         &MEDIASUBTYPE_VOBSUB },
     { AV_CODEC_ID_DVB_SUBTITLE,         &MEDIASUBTYPE_DVB_SUBTITLES },
     { AV_CODEC_ID_WEBVTT,               &MEDIASUBTYPE_WEBVTT },
+    { AV_CODEC_ID_ARIB_CAPTION,         &MEDIASUBTYPE_ASS },
 };
 // clang-format on
 

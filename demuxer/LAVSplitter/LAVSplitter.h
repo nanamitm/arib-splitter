@@ -40,9 +40,9 @@
 
 #include "LAVSplitterTrayIcon.h"
 
-#define LAVF_REGISTRY_KEY L"Software\\LAV\\Splitter"
+#define LAVF_REGISTRY_KEY L"Software\\ARIBSplitter\\Splitter"
 #define LAVF_REGISTRY_KEY_FORMATS LAVF_REGISTRY_KEY L"\\Formats"
-#define LAVF_LOG_FILE L"LAVSplitter.txt"
+#define LAVF_LOG_FILE L"ARIBSplitter.txt"
 
 #define MAX_PTS_SHIFT 50000000i64
 
@@ -53,7 +53,7 @@ class CLAVInputPin;
 #pragma warning(disable : 4355)
 #endif
 
-class __declspec(uuid("171252A0-8820-4AFE-9DF8-5C92B2D66B04")) CLAVSplitter
+class __declspec(uuid("1AA767C2-BF31-4791-B65A-474678685956")) CLAVSplitter
     : public CBaseFilter
     , public CCritSec
     , protected CAMThread
@@ -351,7 +351,7 @@ class __declspec(uuid("171252A0-8820-4AFE-9DF8-5C92B2D66B04")) CLAVSplitter
     CBaseTrayIcon *m_pTrayIcon = nullptr;
 };
 
-class __declspec(uuid("B98D13E7-55DB-4385-A33D-09FD1BA26338")) CLAVSplitterSource : public CLAVSplitter
+class __declspec(uuid("DB05F97C-F39C-417C-8011-33D093234F1A")) CLAVSplitterSource : public CLAVSplitter
 {
   public:
     // construct only via class factory

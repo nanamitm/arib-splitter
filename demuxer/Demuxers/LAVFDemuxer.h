@@ -23,6 +23,9 @@
 #include <set>
 #include <algorithm>
 #include <sstream>
+#include <map>
+
+#include <aribcaption/aribcaption.h>
 
 #include "BaseDemuxer.h"
 #include "IKeyFrameInfo.h"
@@ -196,6 +199,9 @@ class CLAVFDemuxer
     STDMETHODIMP FlushMVCExtensionQueue();
     STDMETHODIMP CombineMVCBaseExtension(Packet *pBasePacket);
 
+    void CleanupAribDecoders();
+    aribcc_decoder_t *GetOrCreateAribDecoder(int streamIndex, bool superimpose);
+
   private:
     friend class CBDDemuxer;
     AVFormatContext *m_avFormat = nullptr;
@@ -237,5 +243,12 @@ class CLAVFDemuxer
 
     int m_Abort = 0;
     time_t m_timeAbort = 0;
+
+    // ARIB caption decoder instances keyed by stream index
+    // Separate maps for caption and superimpose
+    std::map<int, aribcc_context_t *>  m_aribContexts;
+    std::map<int, aribcc_decoder_t *>  m_aribDecoders;
+    std::map<int, aribcc_context_t *>  m_aribSuperContexts;
+    std::map<int, aribcc_decoder_t *>  m_aribSuperDecoders;
     time_t m_timeOpening = 0;
 };

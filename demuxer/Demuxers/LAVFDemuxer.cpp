@@ -126,6 +126,169 @@ CLAVFDemuxer::~CLAVFDemuxer()
 {
     CleanupAVFormat();
     SAFE_DELETE(m_pFontInstaller);
+    CleanupAribDecoders();
+}
+
+void CLAVFDemuxer::CleanupAribDecoders()
+{
+    for (auto &kv : m_aribDecoders)
+        aribcc_decoder_free(kv.second);
+    m_aribDecoders.clear();
+    for (auto &kv : m_aribContexts)
+        aribcc_context_free(kv.second);
+    m_aribContexts.clear();
+
+    for (auto &kv : m_aribSuperDecoders)
+        aribcc_decoder_free(kv.second);
+    m_aribSuperDecoders.clear();
+    for (auto &kv : m_aribSuperContexts)
+        aribcc_context_free(kv.second);
+    m_aribSuperContexts.clear();
+}
+
+aribcc_decoder_t *CLAVFDemuxer::GetOrCreateAribDecoder(int streamIndex, bool superimpose)
+{
+    auto &decoderMap = superimpose ? m_aribSuperDecoders : m_aribDecoders;
+    auto &contextMap = superimpose ? m_aribSuperContexts : m_aribContexts;
+
+    auto it = decoderMap.find(streamIndex);
+    if (it != decoderMap.end())
+        return it->second;
+
+    aribcc_context_t *ctx = aribcc_context_alloc();
+    if (!ctx)
+        return nullptr;
+
+    aribcc_decoder_t *dec = aribcc_decoder_alloc(ctx);
+    if (!dec)
+    {
+        aribcc_context_free(ctx);
+        return nullptr;
+    }
+
+    aribcc_captiontype_t type = superimpose ? ARIBCC_CAPTIONTYPE_SUPERIMPOSE : ARIBCC_CAPTIONTYPE_CAPTION;
+    if (!aribcc_decoder_initialize(dec, ARIBCC_ENCODING_SCHEME_AUTO, type,
+                                   ARIBCC_PROFILE_AUTODETECT, ARIBCC_LANGUAGEID_FIRST))
+    {
+        aribcc_decoder_free(dec);
+        aribcc_context_free(ctx);
+        return nullptr;
+    }
+
+    contextMap[streamIndex] = ctx;
+    decoderMap[streamIndex]  = dec;
+    return dec;
+}
+
+static std::string BuildASSFromCaption(const aribcc_caption_t &caption)
+{
+    // Build an ASS Dialogue line body from libaribcaption output.
+    // We emit one {\an} positioning override + color/size tags per region.
+    std::string result;
+    for (uint32_t ri = 0; ri < caption.region_count; ri++)
+    {
+        const aribcc_caption_region_t &region = caption.regions[ri];
+        if (region.char_count == 0)
+            continue;
+
+        // Derive ASS \an alignment from region position.
+        // Regions in the lower half → \an2 (bottom-center), upper half → \an8 (top-center).
+        // Use pixel position to pick alignment tag.
+        int anchorNum = 2; // default: bottom-center
+        if (caption.plane_height > 0 && region.y < (int)(caption.plane_height / 2))
+            anchorNum = 8; // top
+
+        char posBuf[64];
+        if (caption.plane_width > 0 && caption.plane_height > 0)
+        {
+            // Convert to 1920x1080 reference frame used by ASS
+            double xPct = (region.x + region.width  / 2.0) / caption.plane_width;
+            double yPct = (anchorNum == 2)
+                ? (region.y + region.height) / (double)caption.plane_height
+                : region.y                   / (double)caption.plane_height;
+            int posX = (int)(xPct * 1920.0);
+            int posY = (int)(yPct * 1080.0);
+            snprintf(posBuf, sizeof(posBuf), "{\\an%d\\pos(%d,%d)}", anchorNum, posX, posY);
+        }
+        else
+        {
+            snprintf(posBuf, sizeof(posBuf), "{\\an%d}", anchorNum);
+        }
+
+        if (!result.empty())
+            result += "\\N"; // ASS line break between regions
+
+        result += posBuf;
+
+        // Append each character with inline style overrides
+        for (uint32_t ci = 0; ci < region.char_count; ci++)
+        {
+            const aribcc_caption_char_t &ch = region.chars[ci];
+
+            // Font size override (convert from caption plane pixels to ASS points at 1080p)
+            int assFs = (caption.plane_height > 0 && ch.char_height > 0)
+                ? (int)(ch.char_height * 1080.0 / caption.plane_height)
+                : 0;
+
+            // Build style tags
+            std::string styleTags;
+            if (assFs > 0)
+            {
+                char fsBuf[32];
+                snprintf(fsBuf, sizeof(fsBuf), "{\\fs%d}", assFs);
+                styleTags += fsBuf;
+            }
+
+            // Text color (ARIB uses ARGB, ASS uses BGR)
+            {
+                char colorBuf[64];
+                snprintf(colorBuf, sizeof(colorBuf), "{\\c&H%02X%02X%02X&}",
+                         ch.text_color.b, ch.text_color.g, ch.text_color.r);
+                styleTags += colorBuf;
+                if (ch.text_color.a < 255)
+                {
+                    char alphaBuf[32];
+                    snprintf(alphaBuf, sizeof(alphaBuf), "{\\alpha&H%02X&}", 255 - ch.text_color.a);
+                    styleTags += alphaBuf;
+                }
+            }
+
+            if (ch.style & ARIBCC_CHARSTYLE_BOLD)
+                styleTags += "{\\b1}";
+            if (ch.style & ARIBCC_CHARSTYLE_ITALIC)
+                styleTags += "{\\i1}";
+            if (ch.style & ARIBCC_CHARSTYLE_UNDERLINE)
+                styleTags += "{\\u1}";
+
+            result += styleTags;
+
+            // Append UTF-8 codepoint
+            uint32_t cp = ch.codepoint;
+            if (cp < 0x80)
+            {
+                result += (char)cp;
+            }
+            else if (cp < 0x800)
+            {
+                result += (char)(0xC0 | (cp >> 6));
+                result += (char)(0x80 | (cp & 0x3F));
+            }
+            else if (cp < 0x10000)
+            {
+                result += (char)(0xE0 | (cp >> 12));
+                result += (char)(0x80 | ((cp >> 6) & 0x3F));
+                result += (char)(0x80 | (cp & 0x3F));
+            }
+            else
+            {
+                result += (char)(0xF0 | (cp >> 18));
+                result += (char)(0x80 | ((cp >> 12) & 0x3F));
+                result += (char)(0x80 | ((cp >> 6)  & 0x3F));
+                result += (char)(0x80 | (cp & 0x3F));
+            }
+        }
+    }
+    return result;
 }
 
 STDMETHODIMP CLAVFDemuxer::NonDelegatingQueryInterface(REFIID riid, void **ppv)
@@ -1651,6 +1814,50 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
             {
                 pPacket->dwFlags |= LAV_PACKET_SRT;
             }
+
+            // ARIB B-24 caption / superimpose decoding
+            if (stream->codecpar->codec_id == AV_CODEC_ID_ARIB_CAPTION)
+            {
+                // Determine if this stream is superimpose based on AVStream profile
+                bool isSuperimpose = (stream->codecpar->profile == AV_PROFILE_ARIB_PROFILE_C);
+                int streamIdx = (int)pPacket->StreamId;
+
+                aribcc_decoder_t *dec = GetOrCreateAribDecoder(streamIdx, isSuperimpose);
+                if (dec && pPacket->GetDataSize() > 0)
+                {
+                    int64_t pts_ms = (rt != Packet::INVALID_TIME) ? (rt / 10000LL) : ARIBCC_PTS_NOPTS;
+
+                    aribcc_caption_t caption;
+                    aribcc_decode_status_t status = aribcc_decoder_decode(
+                        dec, pPacket->GetData(), (size_t)pPacket->GetDataSize(), pts_ms, &caption);
+
+                    if (status == ARIBCC_DECODE_STATUS_GOT_CAPTION)
+                    {
+                        std::string assText = BuildASSFromCaption(caption);
+
+                        // Set stop time
+                        if (caption.wait_duration != ARIBCC_DURATION_INDEFINITE && caption.wait_duration > 0)
+                            pPacket->rtStop = pPacket->rtStart + caption.wait_duration * 10000LL;
+                        else
+                            pPacket->rtStop = pPacket->rtStart + 30LL * 10000000LL; // 30s fallback
+
+                        pPacket->SetData(assText.c_str(), (int)assText.size());
+                        pPacket->dwFlags |= LAV_PACKET_PARSED;
+                        aribcc_caption_cleanup(&caption);
+                    }
+                    else
+                    {
+                        aribcc_caption_cleanup(&caption);
+                        SAFE_DELETE(pPacket);
+                        return S_FALSE;
+                    }
+                }
+                else
+                {
+                    SAFE_DELETE(pPacket);
+                    return S_FALSE;
+                }
+            }
         }
 
         if (stream->codecpar->codec_id == AV_CODEC_ID_PCM_S16BE_PLANAR ||
@@ -1889,6 +2096,12 @@ retry:
 
     // Flush MVC extensions on seek (no-op if empty)
     FlushMVCExtensionQueue();
+
+    // Flush ARIB decoders on seek
+    for (auto &kv : m_aribDecoders)
+        aribcc_decoder_flush(kv.second);
+    for (auto &kv : m_aribSuperDecoders)
+        aribcc_decoder_flush(kv.second);
 
     return S_OK;
 }

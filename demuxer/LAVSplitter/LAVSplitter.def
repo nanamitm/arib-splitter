@@ -1,6 +1,6 @@
 ; LAVFDShowSplitter.def ; declares the exports
 
-LIBRARY         "LAVSplitter.ax"
+LIBRARY         "ARIBSplitter.ax"
 
 EXPORTS
                 DllGetClassObject PRIVATE

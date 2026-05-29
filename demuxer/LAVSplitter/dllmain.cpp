@@ -72,14 +72,14 @@ const AMOVIESETUP_PIN sudOutputPins[] = {{
                                          }};
 
 const AMOVIESETUP_FILTER sudFilterReg = {&__uuidof(CLAVSplitter), // filter clsid
-                                         L"LAV Splitter",         // filter name
+                                         L"ARIB Splitter",        // filter name
                                          MERIT_PREFERRED + 4,     // merit
                                          2,                       // count of registered pins
                                          sudOutputPins,           // list of pins to register
                                          CLSID_LegacyAmFilterCategory};
 
 const AMOVIESETUP_FILTER sudFilterRegSource = {&__uuidof(CLAVSplitterSource), // filter clsid
-                                               L"LAV Splitter Source",        // filter name
+                                               L"ARIB Splitter Source",       // filter name
                                                MERIT_PREFERRED + 4,           // merit
                                                1,                             // count of registered pins
                                                sudOutputPins,                 // list of pins to register
@@ -95,9 +95,9 @@ CFactoryTemplate g_Templates[] = {
     {sudFilterRegSource.strName, sudFilterRegSource.clsID, CreateInstance<CLAVSplitterSource>, nullptr,
      &sudFilterRegSource},
     // This entry is for the property page.
-    {L"LAV Splitter Properties", &CLSID_LAVSplitterSettingsProp, CreateInstance<CLAVSplitterSettingsProp>, nullptr,
+    {L"ARIB Splitter Properties", &CLSID_LAVSplitterSettingsProp, CreateInstance<CLAVSplitterSettingsProp>, nullptr,
      nullptr},
-    {L"LAV Splitter Input Formats", &CLSID_LAVSplitterFormatsProp, CreateInstance<CLAVSplitterFormatsProp>, nullptr,
+    {L"ARIB Splitter Input Formats", &CLSID_LAVSplitterFormatsProp, CreateInstance<CLAVSplitterFormatsProp>, nullptr,
      nullptr}};
 int g_cTemplates = sizeof(g_Templates) / sizeof(g_Templates[0]);
 
