@@ -92,17 +92,19 @@ configure() (
   EXTRA_LDFLAGS=""
   PKG_CONFIG_PREFIX_DIR=""
   if [ "${arch}" == "x86_64" ]; then
-    export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:../thirdparty/64/lib/pkgconfig/"
+    THIRDPARTY_ABS="$(cd ../thirdparty/64 && pwd)"
+    export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:${THIRDPARTY_ABS}/lib/pkgconfig/"
     OPTIONS="${OPTIONS} --enable-cross-compile --cross-prefix=${cross_prefix} --target-os=mingw32 --pkg-config=pkg-config"
-    EXTRA_CFLAGS="${EXTRA_CFLAGS} -I../thirdparty/64/include -fno-omit-frame-pointer"
-    EXTRA_LDFLAGS="${EXTRA_LDFLAGS} -L../thirdparty/64/lib"
-    PKG_CONFIG_PREFIX_DIR="--define-variable=prefix=../thirdparty/64"
+    EXTRA_CFLAGS="${EXTRA_CFLAGS} -I${THIRDPARTY_ABS}/include -fno-omit-frame-pointer"
+    EXTRA_LDFLAGS="${EXTRA_LDFLAGS} -L${THIRDPARTY_ABS}/lib"
+    PKG_CONFIG_PREFIX_DIR="--define-variable=prefix=${THIRDPARTY_ABS}"
   else
-    export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:../thirdparty/32/lib/pkgconfig/"
+    THIRDPARTY_ABS="$(cd ../thirdparty/32 && pwd)"
+    export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:${THIRDPARTY_ABS}/lib/pkgconfig/"
     OPTIONS="${OPTIONS} --cpu=i686"
-    EXTRA_CFLAGS="${EXTRA_CFLAGS} -I../thirdparty/32/include -mmmx -msse -msse2 -mfpmath=sse -mstackrealign"
-    EXTRA_LDFLAGS="${EXTRA_LDFLAGS} -L../thirdparty/32/lib"
-    PKG_CONFIG_PREFIX_DIR="--define-variable=prefix=../thirdparty/32"
+    EXTRA_CFLAGS="${EXTRA_CFLAGS} -I${THIRDPARTY_ABS}/include -mmmx -msse -msse2 -mfpmath=sse -mstackrealign"
+    EXTRA_LDFLAGS="${EXTRA_LDFLAGS} -L${THIRDPARTY_ABS}/lib"
+    PKG_CONFIG_PREFIX_DIR="--define-variable=prefix=${THIRDPARTY_ABS}"
   fi
 
   sh configure --extra-ldflags="${EXTRA_LDFLAGS}" --extra-cflags="${EXTRA_CFLAGS}" --pkg-config-flags="--static ${PKG_CONFIG_PREFIX_DIR}" ${OPTIONS}
