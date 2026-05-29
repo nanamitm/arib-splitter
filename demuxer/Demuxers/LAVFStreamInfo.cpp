@@ -787,6 +787,11 @@ STDMETHODIMP CLAVFStreamInfo::CreateSubtitleMediaType(AVFormatContext *avctx, AV
         char *lang = dictEntry->value;
         strncpy_s(subInfo->IsoLang, 4, lang, _TRUNCATE);
     }
+    else if (avstream->codecpar->codec_id == AV_CODEC_ID_ARIB_CAPTION)
+    {
+        // ARIB B-24 captions are Japanese broadcast standard
+        strncpy_s(subInfo->IsoLang, 4, "jpn", _TRUNCATE);
+    }
     else
     {
         strncpy_s(subInfo->IsoLang, 4, "und", _TRUNCATE);
