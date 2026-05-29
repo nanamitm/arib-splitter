@@ -80,20 +80,14 @@ bin_x64\
 
 ## Register
 
-Register the built filter:
+> **Administrator privileges are required.**
+> Right-click `install_aribsplitter.bat` and choose **Run as administrator**.
 
 ```bat
 install_aribsplitter.bat
 ```
 
-The script requests administrator privileges and registers
-`ARIBSplitter.ax` in the same directory when used from a release package.
-In a development checkout, it falls back to `bin_x64\ARIBSplitter.ax`.
-To register the debug build from a development checkout instead:
-
-```bat
-install_aribsplitter.bat debug
-```
+`regsvr32` will show a dialog confirming success or failure.
 
 To unregister:
 
