@@ -168,7 +168,7 @@ aribcc_decoder_t *CLAVFDemuxer::GetOrCreateAribDecoder(int streamIndex, bool sup
 
     aribcc_captiontype_t type = superimpose ? ARIBCC_CAPTIONTYPE_SUPERIMPOSE : ARIBCC_CAPTIONTYPE_CAPTION;
     if (!aribcc_decoder_initialize(dec, ARIBCC_ENCODING_SCHEME_AUTO, type,
-                                   ARIBCC_PROFILE_AUTODETECT, ARIBCC_LANGUAGEID_FIRST))
+                                   ARIBCC_PROFILE_DEFAULT, ARIBCC_LANGUAGEID_FIRST))
     {
         aribcc_decoder_free(dec);
         aribcc_context_free(ctx);
@@ -262,30 +262,10 @@ static std::string BuildASSFromCaption(const aribcc_caption_t &caption)
 
             result += styleTags;
 
-            // Append UTF-8 codepoint
-            uint32_t cp = ch.codepoint;
-            if (cp < 0x80)
-            {
-                result += (char)cp;
-            }
-            else if (cp < 0x800)
-            {
-                result += (char)(0xC0 | (cp >> 6));
-                result += (char)(0x80 | (cp & 0x3F));
-            }
-            else if (cp < 0x10000)
-            {
-                result += (char)(0xE0 | (cp >> 12));
-                result += (char)(0x80 | ((cp >> 6) & 0x3F));
-                result += (char)(0x80 | (cp & 0x3F));
-            }
-            else
-            {
-                result += (char)(0xF0 | (cp >> 18));
-                result += (char)(0x80 | ((cp >> 12) & 0x3F));
-                result += (char)(0x80 | ((cp >> 6)  & 0x3F));
-                result += (char)(0x80 | (cp & 0x3F));
-            }
+            // ch.u8str is a null-terminated UTF-8 string provided by libaribcaption
+            // (handles DRCS replacement and all encoding conversions automatically)
+            if (ch.u8str[0] != '\0')
+                result += ch.u8str;
         }
     }
     return result;
