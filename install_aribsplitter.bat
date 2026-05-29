@@ -42,9 +42,15 @@ echo Registering:
 echo   %TARGET%
 "%SystemRoot%\System32\regsvr32.exe" /s "%TARGET%"
 if errorlevel 1 (
-    echo Failed to register ARIBSplitter.ax
+    echo.
+    echo [FAILED] Registration failed.
+    echo Try running this script as Administrator, or check that all DLLs
+    echo are present in the same folder as ARIBSplitter.ax.
+    pause
     exit /b 1
 )
 
-echo ARIBSplitter registered successfully.
+echo.
+echo [OK] ARIBSplitter registered successfully.
+pause
 exit /b 0
