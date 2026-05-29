@@ -1,0 +1,95 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version string (e.g. 1.0.0). Defaults to YYYYMMDD.'
+        required: false
+        default: ''
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $v = "${{ github.ref_name }}" -replace '^v', ''
+          } elseif ("${{ inputs.version }}" -ne "") {
+            $v = "${{ inputs.version }}"
+          } else {
+            $v = (Get-Date -Format "yyyyMMdd")
+          }
+          "VERSION=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      # ---------- FFmpeg (MSYS2 / MinGW-w64 x64) ----------
+
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-nasm
+            mingw-w64-x86_64-pkg-config
+            mingw-w64-x86_64-zlib
+            mingw-w64-x86_64-bzip2
+            make
+            diffutils
+
+      - name: Build FFmpeg x64
+        shell: msys2 {0}
+        run: sh build_ffmpeg.sh x64
+
+      # ---------- libaribcaption (CMake / MSVC) ----------
+
+      - name: Build libaribcaption
+        shell: cmd
+        run: build_libaribcaption.bat
+
+      # ---------- ARIBSplitter (MSBuild) ----------
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build ARIBSplitter x64
+        shell: cmd
+        run: MSBuild.exe LAVFilters.sln /nologo /m /t:Rebuild /property:Configuration=Release;Platform=x64
+
+      # ---------- Package ----------
+
+      - name: Create release package
+        shell: pwsh
+        run: .\make_release_package.ps1 -Version "${{ steps.ver.outputs.VERSION }}" -Platform x64
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARIBSplitter-${{ steps.ver.outputs.VERSION }}-x64
+          path: dist/*.zip
+
+      # ---------- GitHub Release (tag push only) ----------
+
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ARIBSplitter ${{ steps.ver.outputs.VERSION }}
+          files: dist/*.zip
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
