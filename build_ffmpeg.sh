@@ -90,6 +90,10 @@ configure() (
 
   EXTRA_CFLAGS="-fno-tree-vectorize -D_WIN32_WINNT=0x0600 -DWINVER=0x0600 -gdwarf-5"
   EXTRA_LDFLAGS=""
+  # Statically embed GCC/winpthread/zlib to avoid non-Windows runtime DLL dependencies.
+  # Without these flags the DLLs pull in libgcc_s_seh-1.dll, libwinpthread-1.dll,
+  # and zlib1.dll which are not present on standard Windows installations.
+  EXTRA_LIBS="-static-libgcc -Wl,-Bstatic,-lwinpthread,-lz,-Wl,-Bdynamic"
   PKG_CONFIG_PREFIX_DIR=""
   if [ "${arch}" == "x86_64" ]; then
     THIRDPARTY_ABS="$(cd ../thirdparty/64 && pwd)"
@@ -107,7 +111,7 @@ configure() (
     PKG_CONFIG_PREFIX_DIR="--define-variable=prefix=${THIRDPARTY_ABS}"
   fi
 
-  sh configure --extra-ldflags="${EXTRA_LDFLAGS}" --extra-cflags="${EXTRA_CFLAGS}" --pkg-config-flags="--static ${PKG_CONFIG_PREFIX_DIR}" ${OPTIONS}
+  sh configure --extra-ldflags="${EXTRA_LDFLAGS}" --extra-cflags="${EXTRA_CFLAGS}" --extra-libs="${EXTRA_LIBS}" --pkg-config-flags="--static ${PKG_CONFIG_PREFIX_DIR}" ${OPTIONS}
 )
 
 build() (
