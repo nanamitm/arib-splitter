@@ -21,7 +21,8 @@ $payload = @(
     "avcodec-lav-62.dll",
     "avutil-lav-60.dll",
     "swresample-lav-6.dll",
-    "libbluray.dll"
+    "libbluray.dll",
+    "libwinpthread-1.dll"
 )
 
 $rootFiles = @(

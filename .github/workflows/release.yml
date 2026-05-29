@@ -83,6 +83,10 @@ jobs:
             cat ffmpeg/ffbuild/config.out || true
             exit 1
           fi
+          # libwinpthread-1.dll cannot be eliminated via static linking because
+          # libwinpthread.a itself references the DLL.  Copy it alongside the
+          # FFmpeg DLLs so the package is self-contained.
+          cp /mingw64/bin/libwinpthread-1.dll bin_x64/
 
       # ---------- libaribcaption (CMake / MSVC) ----------
 
