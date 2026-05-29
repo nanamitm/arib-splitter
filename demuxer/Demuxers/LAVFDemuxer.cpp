@@ -250,6 +250,11 @@ static std::string BuildASSFromCaption(const aribcc_caption_t &caption)
 
         result += posBuf;
 
+        // Ruby (furigana) regions are displayed at half the size of main text.
+        // ARIB char_height for ruby chars is often the same as main text in the
+        // coordinate system, so apply an explicit 0.5 scale factor.
+        const float rubyScale = region.is_ruby ? 0.5f : 1.0f;
+
         // Append each character with inline style overrides
         for (uint32_t ci = 0; ci < region.char_count; ci++)
         {
@@ -257,8 +262,8 @@ static std::string BuildASSFromCaption(const aribcc_caption_t &caption)
 
             // Font size override (convert from caption plane pixels to ASS points at 1080p)
             int assFs = (caption.plane_height > 0 && ch.char_height > 0)
-                ? (int)(ch.char_height * 1080.0 / caption.plane_height)
-                : 0;
+                ? (int)(ch.char_height * 1080.0 / caption.plane_height * rubyScale)
+                : (region.is_ruby ? 32 : 0); // fallback: 32pt for ruby, default style for main
 
             // Build style tags
             std::string styleTags;
