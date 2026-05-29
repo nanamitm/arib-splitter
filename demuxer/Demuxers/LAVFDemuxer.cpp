@@ -174,6 +174,10 @@ void CLAVFDemuxer::CleanupAribDecoders()
     for (auto &kv : m_aribPendingPackets)
         delete kv.second;
     m_aribPendingPackets.clear();
+
+    for (auto *p : m_aribRegionQueue)
+        delete p;
+    m_aribRegionQueue.clear();
 }
 
 aribcc_decoder_t *CLAVFDemuxer::GetOrCreateAribDecoder(int streamIndex, bool superimpose)
@@ -210,7 +214,8 @@ aribcc_decoder_t *CLAVFDemuxer::GetOrCreateAribDecoder(int streamIndex, bool sup
     return dec;
 }
 
-static std::string BuildASSFromCaption(const aribcc_caption_t &caption)
+// Returns one ASS payload string per region (separate Dialogue events).
+static std::vector<std::string> BuildASSFromCaption(const aribcc_caption_t &caption)
 {
     // Build an ASS Dialogue line body from libaribcaption output.
     // We emit one {\an} positioning override + color/size tags per region.
@@ -241,12 +246,14 @@ static std::string BuildASSFromCaption(const aribcc_caption_t &caption)
         mainPosX = 960 - (int)(mainRegion->char_count * charDisplayWidth / 2);
     }
 
-    std::string result;
+    std::vector<std::string> results; // one entry per region
     for (uint32_t ri = 0; ri < caption.region_count; ri++)
     {
         const aribcc_caption_region_t &region = caption.regions[ri];
         if (region.char_count == 0)
             continue;
+
+        std::string result; // payload for this region
 
         // ARIB uses absolute left-edge coordinates; all regions use \an1 (bottom-left).
 
@@ -303,9 +310,6 @@ static std::string BuildASSFromCaption(const aribcc_caption_t &caption)
         {
             snprintf(posBuf, sizeof(posBuf), "{\\an2}");
         }
-
-        if (!result.empty())
-            result += "\\N"; // ASS line break between regions
 
         result += posBuf;
 
@@ -364,13 +368,16 @@ static std::string BuildASSFromCaption(const aribcc_caption_t &caption)
             if (ch.u8str[0] != '\0')
                 result += ch.u8str;
         }
+
+        if (!result.empty())
+            results.push_back(result);
     }
 
     // Fallback: if no regions produced output, use plain text representation
-    if (result.empty() && caption.text && caption.text[0] != '\0')
-        result = caption.text;
+    if (results.empty() && caption.text && caption.text[0] != '\0')
+        results.push_back(caption.text);
 
-    return result;
+    return results;
 }
 
 STDMETHODIMP CLAVFDemuxer::NonDelegatingQueryInterface(REFIID riid, void **ppv)
@@ -1697,6 +1704,14 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
 {
     CheckPointer(ppPacket, E_POINTER);
 
+    // Return queued per-region ARIB packets before reading new data
+    if (!m_aribRegionQueue.empty())
+    {
+        *ppPacket = m_aribRegionQueue.front();
+        m_aribRegionQueue.pop_front();
+        return S_OK;
+    }
+
     // If true, S_FALSE is returned, indicating a soft-failure
     bool bReturnEmpty = false;
 
@@ -1943,19 +1958,22 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                         else
                             rtNewStop = pPacket->rtStart + 30LL * 10000000LL; // 30s fallback
 
-                        std::string assText = BuildASSFromCaption(caption);
+                        std::vector<std::string> regionTexts = BuildASSFromCaption(caption);
                         aribcc_caption_cleanup(&caption);
 
-                        ARIB_LOG("[ARIB] assText(%zu): %s\n", assText.size(),
-                                 assText.empty() ? "(empty)" : assText.substr(0, 120).c_str());
+                        // Flatten for debug log
+                        ARIB_LOG("[ARIB] assText(%zu regions): %s\n", regionTexts.size(),
+                                 regionTexts.empty() ? "(empty)" :
+                                 regionTexts[0].substr(0, 100).c_str());
 
                         // Buffering to prevent subtitle accumulation:
-                        // Hold each packet until the next event arrives so we can set
-                        // an accurate rtStop (= next event's rtStart).
+                        // Hold the FIRST region packet until the next event arrives so we
+                        // can set an accurate rtStop. Additional regions (ruby etc.) are
+                        // queued immediately alongside it.
                         auto &pendingRef = m_aribPendingPackets[streamIdx];
                         Packet *toDeliver = nullptr;
 
-                        if (assText.empty())
+                        if (regionTexts.empty())
                         {
                             // Clear-screen event: finalize pending with corrected stop time
                             if (pendingRef)
@@ -1968,27 +1986,53 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                         }
                         else
                         {
-                            // Build the new packet payload
+                            // Build a Packet for EACH region (separate Dialogue events).
+                            // Region 0 goes through the pending/lookahead mechanism.
+                            // Regions 1..N are cloned and queued directly.
                             static LONG s_readOrder = 0;
-                            LONG ro = InterlockedIncrement(&s_readOrder);
-                            char roPrefix[32];
-                            snprintf(roPrefix, sizeof(roPrefix), "%ld,0,Default,,0,0,0,,", ro);
-                            std::string payload = roPrefix;
-                            payload += assText;
 
-                            pPacket->rtStop = rtNewStop;
-                            pPacket->SetData(payload.c_str(), (int)payload.size());
-                            pPacket->dwFlags |= LAV_PACKET_PARSED;
+                            // Region 0: primary packet (goes into pending buffer)
+                            {
+                                LONG ro = InterlockedIncrement(&s_readOrder);
+                                char roPrefix[32];
+                                snprintf(roPrefix, sizeof(roPrefix), "%ld,0,Default,,0,0,0,,", ro);
+                                std::string payload = roPrefix + regionTexts[0];
+
+                                pPacket->rtStop = rtNewStop;
+                                pPacket->SetData(payload.c_str(), (int)payload.size());
+                                pPacket->dwFlags |= LAV_PACKET_PARSED;
+                            }
 
                             if (pendingRef)
                             {
-                                // Finalize previous pending with this event's start time
                                 pendingRef->rtStop = (std::min)(pendingRef->rtStop, pPacket->rtStart);
                                 toDeliver = pendingRef;
                             }
-                            // Buffer the new packet
                             pendingRef = pPacket;
                             pPacket = nullptr;
+
+                            // Regions 1..N: build cloned packets and queue them.
+                            // They share the same rtStart/rtStop as region 0 will have.
+                            for (size_t ri = 1; ri < regionTexts.size(); ri++)
+                            {
+                                Packet *rPkt = new Packet();
+                                if (!rPkt) break;
+                                if (toDeliver)
+                                    rPkt->CopyProperties(toDeliver);
+                                else
+                                    rPkt->StreamId = (DWORD)streamIdx;
+                                rPkt->rtStart = pendingRef->rtStart;
+                                rPkt->rtStop  = pendingRef->rtStop;
+                                rPkt->bDiscontinuity = TRUE;
+                                rPkt->dwFlags = LAV_PACKET_PARSED;
+
+                                LONG ro = InterlockedIncrement(&s_readOrder);
+                                char roPrefix[32];
+                                snprintf(roPrefix, sizeof(roPrefix), "%ld,0,Default,,0,0,0,,", ro);
+                                std::string payload = roPrefix + regionTexts[ri];
+                                rPkt->SetData(payload.c_str(), (int)payload.size());
+                                m_aribRegionQueue.push_back(rPkt);
+                            }
                         }
 
                         if (toDeliver)
@@ -2261,6 +2305,9 @@ retry:
     for (auto &kv : m_aribPendingPackets)
         delete kv.second;
     m_aribPendingPackets.clear();
+    for (auto *p : m_aribRegionQueue)
+        delete p;
+    m_aribRegionQueue.clear();
 
     return S_OK;
 }
