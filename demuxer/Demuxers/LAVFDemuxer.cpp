@@ -271,6 +271,11 @@ static std::string BuildASSFromCaption(const aribcc_caption_t &caption)
                 result += ch.u8str;
         }
     }
+
+    // Fallback: if no regions produced output, use plain text representation
+    if (result.empty() && caption.text && caption.text[0] != '\0')
+        result = caption.text;
+
     return result;
 }
 
