@@ -214,6 +214,33 @@ static std::string BuildASSFromCaption(const aribcc_caption_t &caption)
 {
     // Build an ASS Dialogue line body from libaribcaption output.
     // We emit one {\an} positioning override + color/size tags per region.
+
+    // First pass: find the main (non-ruby) lower-screen region so we can
+    // compute ruby positions relative to the centered main text.
+    const aribcc_caption_region_t *mainRegion = nullptr;
+    for (uint32_t ri = 0; ri < caption.region_count; ri++)
+    {
+        const aribcc_caption_region_t &r = caption.regions[ri];
+        if (!r.is_ruby && r.char_count > 0 &&
+            caption.plane_height > 0 && r.y >= caption.plane_height / 2)
+        {
+            mainRegion = &r;
+            break;
+        }
+    }
+
+    // Precompute main text centering parameters (used for ruby alignment).
+    int mainPosX = -1;         // display left edge of main text when centered
+    int sectionWidth = 40;     // ARIB char cell width (char_w + h_spacing)
+    int charDisplayWidth = 72; // display pixels per char (char_w * 1920/plane_w)
+    if (mainRegion && mainRegion->char_count > 0 && caption.plane_width > 0)
+    {
+        const aribcc_caption_char_t &fc = mainRegion->chars[0];
+        charDisplayWidth = (int)(fc.char_width * 1920.0 / caption.plane_width);
+        sectionWidth = fc.char_width + fc.char_horizontal_spacing;
+        mainPosX = 960 - (int)(mainRegion->char_count * charDisplayWidth / 2);
+    }
+
     std::string result;
     for (uint32_t ri = 0; ri < caption.region_count; ri++)
     {
@@ -244,17 +271,25 @@ static std::string BuildASSFromCaption(const aribcc_caption_t &caption)
 
             if (region.is_ruby && region.char_count > 0)
             {
-                // Ruby: bottom-left anchor at the first character's x.
-                int posX = (int)(region.chars[0].x * 1920.0 / caption.plane_width);
+                // Ruby: compute X from the centered main text position.
+                // When main text uses \an2\pos(960), we reverse-calculate where
+                // the target kanji is in display coords, then left-align ruby there.
+                int posX;
+                if (mainPosX >= 0 && mainRegion && sectionWidth > 0)
+                {
+                    // How many char cells from main text start to first ruby char
+                    int rubyOffset = (region.chars[0].x - mainRegion->x) / sectionWidth;
+                    posX = mainPosX + rubyOffset * charDisplayWidth;
+                }
+                else
+                {
+                    posX = (int)(region.chars[0].x * 1920.0 / caption.plane_width);
+                }
                 snprintf(posBuf, sizeof(posBuf), "{\\an1\\pos(%d,%d)}", posX, posY);
             }
             else if (region.y >= caption.plane_height / 2)
             {
-                // Lower-screen captions: horizontally center at screen center.
-                // ARIB stores absolute coords that include a broadcast-defined
-                // display_area_start_x_ offset not exposed by libaribcaption's
-                // public API. For standard Japanese TV captions (always centered),
-                // \an2\pos(960, posY) gives the correct visual result.
+                // Lower-screen captions: center at screen midpoint.
                 snprintf(posBuf, sizeof(posBuf), "{\\an2\\pos(960,%d)}", posY);
             }
             else
