@@ -876,6 +876,9 @@ STDMETHODIMP CLAVFStreamInfo::CreateSubtitleMediaType(AVFormatContext *avctx, AV
     // ASS renderer has style/resolution context for the dialogue events.
     if (avstream->codecpar->codec_id == AV_CODEC_ID_ARIB_CAPTION)
     {
+        // Use ReadOrder format: timing comes from IMediaSample::GetTime(),
+        // not from embedded Start/End in the packet data.
+        // This matches mmts-dsfilter's convention and MPC-BE's expectation.
         static const char kAribAssHeader[] =
             "[Script Info]\r\n"
             "ScriptType: v4.00+\r\n"
@@ -887,11 +890,11 @@ STDMETHODIMP CLAVFStreamInfo::CreateSubtitleMediaType(AVFormatContext *avctx, AV
             "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
             "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, "
             "Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\r\n"
-            "Style: Default,MS Gothic,64,&H00FFFFFF,&H000000FF,&H00000000,&HB4000000,"
-            "0,0,0,0,100,100,0,0,1,2,1,2,10,10,10,1\r\n"
+            "Style: Default,MS Gothic,64,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,"
+            "0,0,0,0,100,100,0,0,1,3,1,2,20,20,20,1\r\n"
             "\r\n"
             "[Events]\r\n"
-            "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\r\n";
+            "Format: ReadOrder, Layer, Style, Name, MarginL, MarginR, MarginV, Effect, Text\r\n";
 
         size_t headerLen = strlen(kAribAssHeader);
         mtype.ReallocFormatBuffer((ULONG)(sizeof(SUBTITLEINFO) + headerLen));

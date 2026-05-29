@@ -50,6 +50,32 @@ extern "C"
 #include "lavf_log.h"
 #endif
 
+// Temporary ARIB debug logging - write to %TEMP%\arib_debug.log
+#ifdef ARIB_DEBUG_LOG
+#include <cstdio>
+#include <cstdarg>
+static void AribDbgLog(const char *fmt, ...)
+{
+    static char path[MAX_PATH] = {};
+    if (!path[0])
+    {
+        char tmp[MAX_PATH];
+        GetTempPathA(MAX_PATH, tmp);
+        snprintf(path, MAX_PATH, "%sarib_debug.log", tmp);
+    }
+    FILE *f = fopen(path, "a");
+    if (!f) return;
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(f, fmt, args);
+    va_end(args);
+    fclose(f);
+}
+#define ARIB_LOG(...) AribDbgLog(__VA_ARGS__)
+#else
+#define ARIB_LOG(...) do {} while(0)
+#endif
+
 #include "BDDemuxer.h"
 #include "CueSheet.h"
 
@@ -1675,6 +1701,10 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
 
         if (!streamActive)
         {
+            if (stream->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE)
+                ARIB_LOG("[ARIB] subtitle pkt DROPPED stream=%d active[subpic]=%d active[video]=%d active[audio]=%d\n",
+                         pkt.stream_index,
+                         m_dActiveStreams[subpic], m_dActiveStreams[video], m_dActiveStreams[audio]);
             av_packet_unref(&pkt);
             return S_FALSE;
         }
@@ -1790,6 +1820,10 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
 
         if (stream->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE)
         {
+            ARIB_LOG("[ARIB] subtitle pkt: stream=%d codec_id=%d size=%d\n",
+                     (int)pPacket->StreamId,
+                     (int)stream->codecpar->codec_id,
+                     pPacket->GetDataSize());
             pPacket->bDiscontinuity = TRUE;
 
             if (forcedSubStream)
@@ -1809,19 +1843,35 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                 // Determine if this stream is superimpose based on AVStream profile
                 bool isSuperimpose = (stream->codecpar->profile == AV_PROFILE_ARIB_PROFILE_C);
                 int streamIdx = (int)pPacket->StreamId;
+                int dataSize  = pPacket->GetDataSize();
+                const uint8_t *rawData = pPacket->GetData();
+
+                ARIB_LOG("[ARIB] pkt: stream=%d super=%d size=%d pts_rt=%lld\n",
+                         streamIdx, (int)isSuperimpose, dataSize, (long long)rt);
+                if (rawData && dataSize >= 3)
+                    ARIB_LOG("[ARIB] first3: %02X %02X %02X\n",
+                             rawData[0], rawData[1], rawData[2]);
 
                 aribcc_decoder_t *dec = GetOrCreateAribDecoder(streamIdx, isSuperimpose);
-                if (dec && pPacket->GetDataSize() > 0)
+                if (dec && dataSize > 0)
                 {
                     int64_t pts_ms = (rt != Packet::INVALID_TIME) ? (rt / 10000LL) : ARIBCC_PTS_NOPTS;
 
                     aribcc_caption_t caption;
                     aribcc_decode_status_t status = aribcc_decoder_decode(
-                        dec, pPacket->GetData(), (size_t)pPacket->GetDataSize(), pts_ms, &caption);
+                        dec, rawData, (size_t)dataSize, pts_ms, &caption);
+
+                    ARIB_LOG("[ARIB] decode status=%d regions=%u text=%s\n",
+                             (int)status,
+                             (status == ARIBCC_DECODE_STATUS_GOT_CAPTION) ? caption.region_count : 0u,
+                             (status == ARIBCC_DECODE_STATUS_GOT_CAPTION && caption.text) ? caption.text : "(none)");
 
                     if (status == ARIBCC_DECODE_STATUS_GOT_CAPTION)
                     {
                         std::string assText = BuildASSFromCaption(caption);
+
+                        ARIB_LOG("[ARIB] assText(%zu): %s\n", assText.size(),
+                                 assText.empty() ? "(empty)" : assText.substr(0, 120).c_str());
 
                         // Set stop time
                         if (caption.wait_duration != ARIBCC_DURATION_INDEFINITE && caption.wait_duration > 0)
@@ -1829,7 +1879,16 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                         else
                             pPacket->rtStop = pPacket->rtStart + 30LL * 10000000LL; // 30s fallback
 
-                        pPacket->SetData(assText.c_str(), (int)assText.size());
+                        // ReadOrder format: prepend a monotonically increasing order number.
+                        // MPC-BE's ASS renderer expects "ReadOrder, ..." and uses
+                        // IMediaSample::GetTime() for Start/End, not embedded timestamps.
+                        static LONG s_readOrder = 0;
+                        char roPrefix[16];
+                        snprintf(roPrefix, sizeof(roPrefix), "%ld,", InterlockedIncrement(&s_readOrder));
+                        std::string payload = roPrefix;
+                        payload += assText;
+
+                        pPacket->SetData(payload.c_str(), (int)payload.size());
                         pPacket->dwFlags |= LAV_PACKET_PARSED;
                         aribcc_caption_cleanup(&caption);
                     }
@@ -1842,6 +1901,7 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                 }
                 else
                 {
+                    ARIB_LOG("[ARIB] skipped: dec=%p size=%d\n", (void*)dec, dataSize);
                     SAFE_DELETE(pPacket);
                     return S_FALSE;
                 }
@@ -2626,7 +2686,21 @@ STDMETHODIMP CLAVFDemuxer::AddStream(int streamId)
     {
     case AVMEDIA_TYPE_VIDEO: m_streams[video].push_back(s); break;
     case AVMEDIA_TYPE_AUDIO: m_streams[audio].push_back(s); break;
-    case AVMEDIA_TYPE_SUBTITLE: m_streams[subpic].push_back(s); break;
+    case AVMEDIA_TYPE_SUBTITLE:
+        ARIB_LOG("[ARIB] AddStream subtitle: idx=%d codec_id=%d disp=0x%x\n",
+                 pStream->index, (int)pStream->codecpar->codec_id, pStream->disposition);
+        // Mark ARIB captions as default so SelectSubtitleStream auto-selects them.
+        // MPEG TS typically doesn't set AV_DISPOSITION_DEFAULT on caption streams,
+        // but without it the subtitle selector (*:*|d) never matches.
+        if (pStream->codecpar->codec_id == AV_CODEC_ID_ARIB_CAPTION)
+        {
+            if (!(pStream->disposition & AV_DISPOSITION_DEFAULT) && m_streams[subpic].empty())
+                pStream->disposition |= AV_DISPOSITION_DEFAULT;
+            s.language = "jpn";
+            s.lcid = ProbeLangForLCID("jpn");
+        }
+        m_streams[subpic].push_back(s);
+        break;
     default:
         // unsupported stream
         // Normally this should be caught while creating the stream info already.
