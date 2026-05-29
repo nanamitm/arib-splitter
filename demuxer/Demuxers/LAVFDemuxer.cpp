@@ -239,16 +239,19 @@ static std::string BuildASSFromCaption(const aribcc_caption_t &caption)
                 styleTags += fsBuf;
             }
 
-            // Text color (ARIB uses ARGB, ASS uses BGR)
+            // Text color (ARIB uses RGBA packed uint, ASS uses BGR)
             {
                 char colorBuf[64];
                 snprintf(colorBuf, sizeof(colorBuf), "{\\c&H%02X%02X%02X&}",
-                         ch.text_color.b, ch.text_color.g, ch.text_color.r);
+                         ARIBCC_COLOR_B(ch.text_color),
+                         ARIBCC_COLOR_G(ch.text_color),
+                         ARIBCC_COLOR_R(ch.text_color));
                 styleTags += colorBuf;
-                if (ch.text_color.a < 255)
+                uint8_t alpha = ARIBCC_COLOR_A(ch.text_color);
+                if (alpha < 255)
                 {
                     char alphaBuf[32];
-                    snprintf(alphaBuf, sizeof(alphaBuf), "{\\alpha&H%02X&}", 255 - ch.text_color.a);
+                    snprintf(alphaBuf, sizeof(alphaBuf), "{\\alpha&H%02X&}", 255 - alpha);
                     styleTags += alphaBuf;
                 }
             }

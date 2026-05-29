@@ -11,7 +11,8 @@ cmake -S "%~dp0libaribcaption" -B "%BUILD_DIR%\x64\Release" -A x64 ^
   -DARIBCC_USE_DIRECTWRITE=ON ^
   -DARIBCC_USE_GDI_FONT=OFF ^
   -DARIBCC_NO_RENDERER=OFF ^
-  -DCMAKE_BUILD_TYPE=Release
+  "-DCMAKE_CXX_FLAGS_RELEASE=/MT /O2 /DNDEBUG" ^
+  "-DCMAKE_C_FLAGS_RELEASE=/MT /O2 /DNDEBUG"
 
 cmake --build "%BUILD_DIR%\x64\Release" --config Release
 
@@ -20,7 +21,8 @@ cmake -S "%~dp0libaribcaption" -B "%BUILD_DIR%\x64\Debug" -A x64 ^
   -DARIBCC_USE_DIRECTWRITE=ON ^
   -DARIBCC_USE_GDI_FONT=OFF ^
   -DARIBCC_NO_RENDERER=OFF ^
-  -DCMAKE_BUILD_TYPE=Debug
+  "-DCMAKE_CXX_FLAGS_DEBUG=/MTd /Zi /Ob0 /Od /RTC1" ^
+  "-DCMAKE_C_FLAGS_DEBUG=/MTd /Zi /Ob0 /Od /RTC1"
 
 cmake --build "%BUILD_DIR%\x64\Debug" --config Debug
 

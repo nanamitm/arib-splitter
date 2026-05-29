@@ -70,10 +70,10 @@ configure() (
     --disable-devices               \
     --disable-programs              \
     --disable-doc                   \
-    --enable-avisynth               \
+    --disable-avisynth              \
     --enable-d3d11va                \
     --enable-dxva2                  \
-    --enable-schannel               \
+    --disable-schannel              \
     --enable-zlib                   \
     --build-suffix=-lav             \
     --arch=${arch}"
