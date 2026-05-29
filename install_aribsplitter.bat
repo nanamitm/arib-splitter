@@ -34,7 +34,7 @@ if not exist "%TARGET%" (
 net session >nul 2>&1
 if errorlevel 1 (
     echo Requesting administrator privileges...
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%ComSpec%' -ArgumentList '/k ""%~f0"" %*' -Verb RunAs"
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%ComSpec%' -WorkingDirectory '%~dp0' -ArgumentList '/c %~nx0' -Verb RunAs"
     exit /b 0
 )
 
