@@ -64,6 +64,15 @@ jobs:
           done
           x86_64-w64-mingw32-nm --version
 
+      - name: Remove dynamic import libs to force static linking
+        shell: msys2 {0}
+        run: |
+          # Without these import libs, -lz and -lwinpthread fall back to
+          # libz.a and libwinpthread.a so the DLLs don't depend on zlib1.dll
+          # or libwinpthread-1.dll at runtime.
+          rm -f /mingw64/lib/libz.dll.a
+          rm -f /mingw64/lib/libwinpthread.dll.a
+
       - name: Build FFmpeg x64
         shell: msys2 {0}
         run: |
