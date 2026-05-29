@@ -54,7 +54,7 @@ extern "C"
 #ifdef ARIB_DEBUG_LOG
 #include <cstdio>
 #include <cstdarg>
-static void AribDbgLog(const char *fmt, ...)
+void AribDbgLog(const char *fmt, ...)
 {
     static char path[MAX_PATH] = {};
     if (!path[0])
@@ -1879,12 +1879,13 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                         else
                             pPacket->rtStop = pPacket->rtStart + 30LL * 10000000LL; // 30s fallback
 
-                        // ReadOrder format: prepend a monotonically increasing order number.
-                        // MPC-BE's ASS renderer expects "ReadOrder, ..." and uses
-                        // IMediaSample::GetTime() for Start/End, not embedded timestamps.
+                        // Full ASS dialogue line body (without Start/End - timing via IMediaSample):
+                        // "ReadOrder,Layer,Style,Name,MarginL,MarginR,MarginV,Effect,Text"
+                        // This matches mmts-dsfilter's convention.
                         static LONG s_readOrder = 0;
-                        char roPrefix[16];
-                        snprintf(roPrefix, sizeof(roPrefix), "%ld,", InterlockedIncrement(&s_readOrder));
+                        LONG ro = InterlockedIncrement(&s_readOrder);
+                        char roPrefix[32];
+                        snprintf(roPrefix, sizeof(roPrefix), "%ld,0,Default,,0,0,0,,", ro);
                         std::string payload = roPrefix;
                         payload += assText;
 

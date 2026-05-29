@@ -25,6 +25,15 @@
 #include "OutputPin.h"
 #include "InputPin.h"
 
+// Shared ARIB debug logger (defined in LAVFDemuxer.cpp)
+#ifdef ARIB_DEBUG_LOG
+#include <cstdio>
+#include <cstdarg>
+extern void AribDbgLog(const char *fmt, ...);
+#else
+static inline void AribDbgLog(const char *, ...) {}
+#endif
+
 #include "BaseDemuxer.h"
 #include "LAVFDemuxer.h"
 #include "BDDemuxer.h"
@@ -871,6 +880,36 @@ HRESULT CLAVSplitter::DeliverPacket(Packet *pPacket)
     CLAVOutputPin *pPin = GetOutputPin(pPacket->StreamId, TRUE);
     if (!pPin || !pPin->IsConnected())
     {
+        // Log only for subtitle stream to diagnose ARIB delivery
+        if (!pPin)
+        {
+            // Try finding the pin without active-only restriction
+            CLAVOutputPin *pAny = GetOutputPin(pPacket->StreamId, FALSE);
+            if (pAny)
+            {
+                static bool s_loggedOnce = false;
+                if (!s_loggedOnce) {
+                    s_loggedOnce = true;
+                    char buf[128];
+                    snprintf(buf, sizeof(buf),
+                             "[ARIB] DeliverPacket DROPPED stream=%lu: pin exists but NOT in ActivePins. connected=%d\n",
+                             pPacket->StreamId, (int)pAny->IsConnected());
+                    AribDbgLog(buf);
+                }
+            }
+        }
+        else
+        {
+            static bool s_loggedOnce2 = false;
+            if (!s_loggedOnce2 && pPin->IsSubtitlePin()) {
+                s_loggedOnce2 = true;
+                char buf[128];
+                snprintf(buf, sizeof(buf),
+                         "[ARIB] DeliverPacket DROPPED stream=%lu: pin NOT connected\n",
+                         pPacket->StreamId);
+                AribDbgLog(buf);
+            }
+        }
         delete pPacket;
         return S_FALSE;
     }
