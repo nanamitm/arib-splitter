@@ -1966,63 +1966,52 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                                  regionTexts.empty() ? "(empty)" :
                                  regionTexts[0].substr(0, 100).c_str());
 
-                        // Buffering to prevent subtitle accumulation:
-                        // Hold the FIRST region packet until the next event arrives so we
-                        // can set an accurate rtStop. Additional regions (ruby etc.) are
-                        // queued immediately alongside it.
-                        auto &pendingRef = m_aribPendingPackets[streamIdx];
+                        // Deliver all regions immediately without lookahead buffering.
+                        // MPC-BE's ASS renderer replaces the previous subtitle when a new
+                        // sample arrives, so accumulation does not occur. Lookahead caused
+                        // late delivery (past rtStart) which silently discarded subtitles.
                         Packet *toDeliver = nullptr;
 
                         if (regionTexts.empty())
                         {
-                            // Clear-screen event: finalize pending with corrected stop time
-                            if (pendingRef)
-                            {
-                                pendingRef->rtStop = (std::min)(pendingRef->rtStop, pPacket->rtStart);
-                                toDeliver = pendingRef;
-                                pendingRef = nullptr;
-                            }
-                            SAFE_DELETE(pPacket);
+                            // Clear-screen event: deliver an empty ASS event to clear display
+                            static LONG s_readOrder = 0;
+                            LONG ro = InterlockedIncrement(&s_readOrder);
+                            char roPrefix[32];
+                            snprintf(roPrefix, sizeof(roPrefix), "%ld,0,Default,,0,0,0,,", ro);
+                            std::string payload = roPrefix; // empty text = clear
+                            pPacket->rtStop = pPacket->rtStart + 1LL * 10000000LL; // 1s
+                            pPacket->SetData(payload.c_str(), (int)payload.size());
+                            pPacket->dwFlags |= LAV_PACKET_PARSED;
+                            toDeliver = pPacket;
+                            pPacket = nullptr;
                         }
                         else
                         {
-                            // Build a Packet for EACH region (separate Dialogue events).
-                            // Region 0 goes through the pending/lookahead mechanism.
-                            // Regions 1..N are cloned and queued directly.
+                            // Build a Packet for each region (separate Dialogue events).
                             static LONG s_readOrder = 0;
 
-                            // Region 0: primary packet (goes into pending buffer)
+                            // Region 0: use pPacket directly
                             {
                                 LONG ro = InterlockedIncrement(&s_readOrder);
                                 char roPrefix[32];
                                 snprintf(roPrefix, sizeof(roPrefix), "%ld,0,Default,,0,0,0,,", ro);
                                 std::string payload = roPrefix + regionTexts[0];
-
                                 pPacket->rtStop = rtNewStop;
                                 pPacket->SetData(payload.c_str(), (int)payload.size());
                                 pPacket->dwFlags |= LAV_PACKET_PARSED;
+                                toDeliver = pPacket;
+                                pPacket = nullptr;
                             }
 
-                            if (pendingRef)
-                            {
-                                pendingRef->rtStop = (std::min)(pendingRef->rtStop, pPacket->rtStart);
-                                toDeliver = pendingRef;
-                            }
-                            pendingRef = pPacket;
-                            pPacket = nullptr;
-
-                            // Regions 1..N: build cloned packets and queue them.
-                            // They share the same rtStart/rtStop as region 0 will have.
+                            // Regions 1..N: queue as additional packets
                             for (size_t ri = 1; ri < regionTexts.size(); ri++)
                             {
                                 Packet *rPkt = new Packet();
                                 if (!rPkt) break;
-                                if (toDeliver)
-                                    rPkt->CopyProperties(toDeliver);
-                                else
-                                    rPkt->StreamId = (DWORD)streamIdx;
-                                rPkt->rtStart = pendingRef->rtStart;
-                                rPkt->rtStop  = pendingRef->rtStop;
+                                rPkt->StreamId = (DWORD)streamIdx;
+                                rPkt->rtStart = toDeliver->rtStart;
+                                rPkt->rtStop  = toDeliver->rtStop;
                                 rPkt->bDiscontinuity = TRUE;
                                 rPkt->dwFlags = LAV_PACKET_PARSED;
 
