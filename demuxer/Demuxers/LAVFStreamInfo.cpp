@@ -900,8 +900,8 @@ STDMETHODIMP CLAVFStreamInfo::CreateSubtitleMediaType(AVFormatContext *avctx, AV
 
         char styleLine[512];
         snprintf(styleLine, sizeof(styleLine),
-            "Style: Default,%s,64,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,"
-            "0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1\r\n", fontA);
+            "Style: Default,%s,64,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,"
+            "0,0,0,0,100,100,0,0,3,0,0,2,20,20,20,1\r\n", fontA);
 
         std::string assHeader =
             "[Script Info]\r\n"

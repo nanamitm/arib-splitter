@@ -795,9 +795,10 @@ static int AssLineGapSpaces(const AribASSRegion &group, const AribASSRegion &reg
 }
 
 // Returns ASS Dialogue payloads per visual text run.
-// Layer 0 events carry the background rectangle (drawing command).
-// Layer 1 events carry the caption text with no box background.
-// Ruby / vertical-text regions are Layer 1 only (no background rect for ruby).
+// Each event uses BorderStyle=3 (opaque box) so the ASS renderer auto-sizes
+// the background to the actual rendered text width — correct for any font.
+// Background colour/alpha are set via \4c/\4a per event from ARIB stream data
+// or INI overrides.  Ruby and vertical chars are emitted individually.
 static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption,
                                                   const AribCaptionSettings &settings)
 {
@@ -921,6 +922,27 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
     if (!settings.fontName.empty())
         fontTag = "{\\fn" + settings.fontName + "}";
 
+    // Build \4c/\4a tags for the BorderStyle=3 background box.
+    // The ASS renderer sizes the box to the actual rendered text, so it always
+    // matches regardless of font.  Replaces the fixed-size Layer 0 drawing rect.
+    auto makeBgTag = [&](uint32_t backColor) -> std::string {
+        if (!settings.showBackground)
+            return "{\\4a&HFF&}";  // fully transparent — hide box
+        uint8_t b = ARIBCC_COLOR_B(backColor);
+        uint8_t g = ARIBCC_COLOR_G(backColor);
+        uint8_t r = ARIBCC_COLOR_R(backColor);
+        uint8_t assAlpha;
+        if (settings.backgroundAlpha >= 0)
+            assAlpha = (uint8_t)min(settings.backgroundAlpha, 255);
+        else {
+            uint8_t a = ARIBCC_COLOR_A(backColor);
+            assAlpha = (a > 0) ? (255 - a) : 255;
+        }
+        char buf[64];
+        snprintf(buf, sizeof(buf), "{\\4c&H%02X%02X%02X&\\4a&H%02X&}", b, g, r, assAlpha);
+        return buf;
+    };
+
     std::vector<ASSEvent> results;
     AribASSRegion group;
     bool hasGroup = false;
@@ -928,25 +950,13 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
         if (!hasGroup)
             return;
 
-        // Layer 0: background rectangle sized to the glyph area only.
-        if (settings.showBackground)
-        {
-            std::string bg = BuildASSBackgroundRect(caption,
-                group.x, group.y,
-                group.right, group.y + group.charHeight,
-                group.backColor,
-                settings.backgroundAlpha);
-            if (!bg.empty())
-                results.push_back({0, std::move(bg)});
-        }
-
-        // Layer 1: text (font / alpha / outline applied if non-default).
         std::string textPayload = BuildASSPositionTag(caption, group.x, group.y);
         textPayload += fontTag;
         textPayload += captionAlphaTag;
         textPayload += outlineTag;
+        textPayload += makeBgTag(group.backColor);
         textPayload += group.text;
-        results.push_back({1, std::move(textPayload)});
+        results.push_back({0, std::move(textPayload)});
 
         hasGroup = false;
         group = AribASSRegion();
@@ -958,22 +968,13 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
         if (region.isRuby || region.isVertical)
         {
             flushGroup();
-            if (region.isVertical && settings.showBackground)
-            {
-                // Vertical chars get a per-character background rect.
-                std::string bg = BuildASSBackgroundRect(caption,
-                    region.x, region.y,
-                    region.right, region.y + region.charHeight,
-                    region.backColor, settings.backgroundAlpha);
-                if (!bg.empty())
-                    results.push_back({0, std::move(bg)});
-            }
             std::string payload = BuildASSPositionTag(caption, region.x, region.y);
             payload += fontTag;
             payload += captionAlphaTag;
             payload += outlineTag;
+            payload += makeBgTag(region.backColor);
             payload += region.text;
-            results.push_back({1, std::move(payload)});
+            results.push_back({0, std::move(payload)});
             continue;
         }
 
