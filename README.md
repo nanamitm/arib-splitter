@@ -10,9 +10,19 @@ through DirectShow while exposing ARIB captions as subtitle samples.
 ## Current Scope
 
 - MPEG-2 TS source filter registration for `.ts`, `.m2ts`, `.mts`, and `.m2t`
-- ARIB caption decoding through libaribcaption
-- ASS subtitle output for normal captions, multi-region captions, and ruby
-- Caption duration handling for explicit and indefinite captions
+- ARIB caption decoding through libaribcaption (Profile A / Profile C)
+- ASS subtitle output covering:
+  - Horizontal captions with correct inter-character spacing (`\fsp`)
+  - Vertical writing (SWF mode 8/10) — characters positioned individually
+  - Multi-region same-line merging; ruby (furigana) independently positioned
+  - Superimpose streams handled separately from normal captions
+  - Layer 0 drawing-command background rectangle + Layer 1 text, preventing
+    background overlap when multiple caption rows are on screen simultaneously
+  - DRCS character substitution via user-supplied MD5 → Unicode mapping table;
+    unrecognised glyphs optionally saved as BMP for identification
+- Caption timing: explicit `wait_duration` and indefinite-duration handling
+- INI-based configuration for font, transparency, background, outline width,
+  timing offset, and DRCS behaviour (see [Configuration](#configuration))
 - MPC-BE external filter usage
 
 This repository is still close to the original LAV Filters tree.  Many decoder
@@ -129,7 +139,7 @@ A sample with all available keys is provided in `settings/ARIBSplitter.ini`.
 |-----|---------|-------------|
 | `FontName` | MS Gothic | Caption font |
 | `CaptionTransparency` | 0 | Text transparency 0 (opaque) – 100 (invisible) |
-| `BackgroundTransparency` | *(stream)* | Background transparency 0–100; omit to use the value embedded in the stream |
+| `BackgroundTransparency` | *(stream value)* | Background transparency 0–100; omit the key entirely to use the alpha value embedded in the broadcast stream |
 | `ShowBackground` | 1 | `0` to hide the caption background |
 | `OutlineWidth` | 0 | Text outline thickness (ASS `\bord` value, 0 = none) |
 | `DelayMs` | 0 | Caption timing offset in milliseconds; negative values advance display |
@@ -171,6 +181,13 @@ player.
 > characters.  If DRCS substitutions include characters outside MS Gothic's
 > coverage — such as CJK Extension glyphs or rare kanji variants — consider
 > setting `FontName=Noto Sans JP` (requires the font to be installed separately).
+
+### Vertical text
+
+Vertical writing mode (ARIB SWF modes 8 and 10) is detected automatically by
+inspecting the direction in which characters advance within each caption region.
+No INI setting is required.  Each character is positioned individually in the
+ASS output so that vertical-layout captions appear at their correct coordinates.
 
 ## Notes
 
