@@ -33,6 +33,7 @@
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <mutex>
 
 extern "C"
 {
@@ -230,6 +231,56 @@ static int AribSectionWidth(const aribcc_caption_char_t &ch)
 static int AribSectionHeight(const aribcc_caption_char_t &ch)
 {
     return (int)std::floor((ch.char_height + ch.char_vertical_spacing) * ch.char_vertical_scale);
+}
+
+struct AribCaptionSettings
+{
+    int  captionAlpha     = 0;   // ASS alpha for text: 0=opaque, 255=fully transparent
+    int  backgroundAlpha  = -1;  // -1=use ARIB data alpha, 0-255=fixed override
+    bool showBackground   = true;
+};
+
+static AribCaptionSettings LoadAribCaptionSettingsFromFile()
+{
+    AribCaptionSettings s;
+
+    WCHAR iniPath[MAX_PATH] = {};
+    HMODULE hMod = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCWSTR>(&LoadAribCaptionSettingsFromFile), &hMod);
+    if (!GetModuleFileNameW(hMod, iniPath, MAX_PATH))
+        return s;
+    WCHAR *dot = wcsrchr(iniPath, L'.');
+    if (dot)
+        wcscpy_s(dot, MAX_PATH - (DWORD)(dot - iniPath), L".ini");
+
+    // CaptionTransparency: 0=opaque (default), 100=fully transparent
+    int captionTrans = (int)GetPrivateProfileIntW(L"ARIB", L"CaptionTransparency", 0, iniPath);
+    captionTrans     = max(0, min(100, captionTrans));
+    s.captionAlpha   = captionTrans * 255 / 100;
+
+    // BackgroundTransparency: use GetPrivateProfileString so absence of the key
+    // is distinguishable from the value 0.
+    WCHAR bgBuf[16] = {};
+    if (GetPrivateProfileStringW(L"ARIB", L"BackgroundTransparency", L"", bgBuf, 16, iniPath) > 0)
+    {
+        int bgTrans          = max(0, min(100, _wtoi(bgBuf)));
+        s.backgroundAlpha    = bgTrans * 255 / 100;
+    }
+    // else: s.backgroundAlpha = -1 → use alpha from ARIB back_color
+
+    // ShowBackground: 1=show (default), 0=hide
+    s.showBackground = GetPrivateProfileIntW(L"ARIB", L"ShowBackground", 1, iniPath) != 0;
+
+    return s;
+}
+
+static const AribCaptionSettings& GetAribCaptionSettings()
+{
+    // C++17 magic statics guarantee thread-safe one-time initialisation.
+    static const AribCaptionSettings s = LoadAribCaptionSettingsFromFile();
+    return s;
 }
 
 static double CaptionPlaneToASSScale(const aribcc_caption_t &caption)
@@ -460,10 +511,12 @@ struct ASSEvent
     std::string payload;
 };
 
+// overrideAlpha: -1 = derive from backColor, 0-255 = fixed ASS alpha (0=opaque, 255=transparent)
 static std::string BuildASSBackgroundRect(const aribcc_caption_t &caption,
                                           int planeX1, int planeY1,
                                           int planeX2, int planeY2,
-                                          uint32_t backColor)
+                                          uint32_t backColor,
+                                          int overrideAlpha)
 {
     int x1 = ScaleCaptionXToASSArea(caption, planeX1);
     int y1 = ScaleCaptionYToASSArea(caption, planeY1);
@@ -472,11 +525,24 @@ static std::string BuildASSBackgroundRect(const aribcc_caption_t &caption,
     if (x1 >= x2 || y1 >= y2)
         return {};
 
+    uint8_t assAlpha;
+    if (overrideAlpha >= 0)
+    {
+        if (overrideAlpha >= 255)
+            return {};  // fully transparent — nothing to draw
+        assAlpha = (uint8_t)overrideAlpha;
+    }
+    else
+    {
+        uint8_t a = ARIBCC_COLOR_A(backColor);
+        if (a == 0)
+            return {};  // ARIB data says transparent
+        assAlpha = 255 - a;
+    }
+
     uint8_t b = ARIBCC_COLOR_B(backColor);
     uint8_t g = ARIBCC_COLOR_G(backColor);
     uint8_t r = ARIBCC_COLOR_R(backColor);
-    uint8_t a = ARIBCC_COLOR_A(backColor);
-    uint8_t assAlpha = (a > 0) ? (255 - a) : 0x80;
 
     char buf[256];
     snprintf(buf, sizeof(buf),
@@ -585,6 +651,13 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
         return a.x < b.x;
     });
 
+    const AribCaptionSettings &settings = GetAribCaptionSettings();
+
+    // Pre-build the \1a alpha override tag for text transparency (empty if opaque).
+    char captionAlphaTag[16] = {};
+    if (settings.captionAlpha > 0)
+        snprintf(captionAlphaTag, sizeof(captionAlphaTag), "{\\1a&H%02X&}", (uint8_t)settings.captionAlpha);
+
     std::vector<ASSEvent> results;
     AribASSRegion group;
     bool hasGroup = false;
@@ -593,18 +666,22 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
             return;
 
         // Layer 0: background rectangle sized to the glyph area only.
-        if (ARIBCC_COLOR_A(group.backColor) > 0)
+        if (settings.showBackground)
         {
             std::string bg = BuildASSBackgroundRect(caption,
                 group.x, group.y,
                 group.right, group.y + group.charHeight,
-                group.backColor);
+                group.backColor,
+                settings.backgroundAlpha);
             if (!bg.empty())
                 results.push_back({0, std::move(bg)});
         }
 
-        // Layer 1: text, no box background (handled by Layer 0).
-        results.push_back({1, BuildASSPositionTag(caption, group.x, group.y) + group.text});
+        // Layer 1: text (caption alpha applied if non-zero).
+        std::string textPayload = BuildASSPositionTag(caption, group.x, group.y);
+        textPayload += captionAlphaTag;
+        textPayload += group.text;
+        results.push_back({1, std::move(textPayload)});
 
         hasGroup = false;
         group = AribASSRegion();
@@ -616,7 +693,10 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
         {
             flushGroup();
             // Ruby: Layer 1 only, no background rect.
-            results.push_back({1, BuildASSPositionTag(caption, region.x, region.y) + region.text});
+            std::string rubyPayload = BuildASSPositionTag(caption, region.x, region.y);
+            rubyPayload += captionAlphaTag;
+            rubyPayload += region.text;
+            results.push_back({1, std::move(rubyPayload)});
             continue;
         }
 
