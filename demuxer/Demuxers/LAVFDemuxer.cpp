@@ -234,58 +234,71 @@ static int AribSectionHeight(const aribcc_caption_char_t &ch)
 
 struct AribCaptionSettings
 {
-    int  captionAlpha     = 0;   // ASS alpha for text: 0=opaque, 255=fully transparent
-    int  backgroundAlpha  = -1;  // -1=use ARIB data alpha, 0-255=fixed override
-    bool showBackground   = true;
-    int  outlineWidth     = 0;   // \bord value in ASS units (0=no outline)
+    int         captionAlpha    = 0;    // ASS \1a: 0=opaque, 255=fully transparent
+    int         backgroundAlpha = -1;   // -1=use ARIB data, 0-255=fixed override
+    bool        showBackground  = true;
+    int         outlineWidth    = 0;    // ASS \bord value (0=no outline)
+    std::string fontName;               // empty = use style default (MS Gothic)
+    int         delayMs         = 0;    // timing offset in ms (can be negative)
 };
 
-static AribCaptionSettings LoadAribCaptionSettingsFromFile()
+// Fill iniPath with the path of the DLL with extension replaced by ".ini".
+static void GetAribIniPath(WCHAR *iniPath, DWORD size)
 {
-    AribCaptionSettings s;
-
-    WCHAR iniPath[MAX_PATH] = {};
     HMODULE hMod = nullptr;
     GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
                        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                       reinterpret_cast<LPCWSTR>(&LoadAribCaptionSettingsFromFile), &hMod);
-    if (!GetModuleFileNameW(hMod, iniPath, MAX_PATH))
-        return s;
+                       reinterpret_cast<LPCWSTR>(&GetAribIniPath), &hMod);
+    if (!GetModuleFileNameW(hMod, iniPath, size)) { iniPath[0] = L'\0'; return; }
     WCHAR *dot = wcsrchr(iniPath, L'.');
-    if (dot)
-        wcscpy_s(dot, MAX_PATH - (DWORD)(dot - iniPath), L".ini");
-
-    // CaptionTransparency: 0=opaque (default), 100=fully transparent
-    int captionTrans = (int)GetPrivateProfileIntW(L"ARIB", L"CaptionTransparency", 0, iniPath);
-    captionTrans     = max(0, min(100, captionTrans));
-    s.captionAlpha   = captionTrans * 255 / 100;
-
-    // BackgroundTransparency: use GetPrivateProfileString so absence of the key
-    // is distinguishable from the value 0.
-    WCHAR bgBuf[16] = {};
-    if (GetPrivateProfileStringW(L"ARIB", L"BackgroundTransparency", L"", bgBuf, 16, iniPath) > 0)
-    {
-        int bgTrans          = max(0, min(100, _wtoi(bgBuf)));
-        s.backgroundAlpha    = bgTrans * 255 / 100;
-    }
-    // else: s.backgroundAlpha = -1 → use alpha from ARIB back_color
-
-    // ShowBackground: 1=show (default), 0=hide
-    s.showBackground = GetPrivateProfileIntW(L"ARIB", L"ShowBackground", 1, iniPath) != 0;
-
-    // OutlineWidth: 0=no outline (default), 1-10=ASS \bord value
-    int outline      = (int)GetPrivateProfileIntW(L"ARIB", L"OutlineWidth", 0, iniPath);
-    s.outlineWidth   = max(0, min(10, outline));
-
-    return s;
+    if (dot) wcscpy_s(dot, size - (DWORD)(dot - iniPath), L".ini");
 }
 
-static AribCaptionSettings GetAribCaptionSettings()
+// Read settings from one INI section.  Keys absent from the section keep the
+// value already in |s| (i.e. the caller may pre-fill |s| as a fallback).
+static void ReadIniSection(AribCaptionSettings &s, const WCHAR *iniPath, const WCHAR *section)
 {
-    // Read from INI on every call so changes take effect without restarting
-    // the player. GetPrivateProfileInt internally caches the file on Windows,
-    // so the overhead for infrequent caption packets is negligible.
-    return LoadAribCaptionSettingsFromFile();
+    WCHAR buf[256] = {};
+
+    auto present = [&](const WCHAR *key) -> bool {
+        return GetPrivateProfileStringW(section, key, L"", buf, _countof(buf), iniPath) > 0;
+    };
+
+    if (present(L"CaptionTransparency"))
+    {
+        int t = max(0, min(100, _wtoi(buf)));
+        s.captionAlpha = t * 255 / 100;
+    }
+    if (present(L"BackgroundTransparency"))
+    {
+        int t = max(0, min(100, _wtoi(buf)));
+        s.backgroundAlpha = t * 255 / 100;
+    }
+    if (present(L"ShowBackground"))
+        s.showBackground = _wtoi(buf) != 0;
+    if (present(L"OutlineWidth"))
+        s.outlineWidth = max(0, min(10, _wtoi(buf)));
+    if (present(L"FontName"))
+    {
+        int len = WideCharToMultiByte(CP_UTF8, 0, buf, -1, nullptr, 0, nullptr, nullptr);
+        if (len > 1) { s.fontName.resize(len - 1); WideCharToMultiByte(CP_UTF8, 0, buf, -1, &s.fontName[0], len, nullptr, nullptr); }
+    }
+    if (present(L"DelayMs"))
+        s.delayMs = max(-30000, min(30000, _wtoi(buf)));
+}
+
+// Load settings for caption (isSuperimpose=false) or superimpose (true).
+// [Superimpose] inherits from [ARIB] for any key not explicitly set.
+static AribCaptionSettings GetAribCaptionSettings(bool isSuperimpose = false)
+{
+    WCHAR iniPath[MAX_PATH] = {};
+    GetAribIniPath(iniPath, MAX_PATH);
+
+    AribCaptionSettings s;
+    ReadIniSection(s, iniPath, L"ARIB");
+    if (isSuperimpose)
+        ReadIniSection(s, iniPath, L"Superimpose");
+    return s;
 }
 
 static double CaptionPlaneToASSScale(const aribcc_caption_t &caption)
@@ -505,10 +518,44 @@ struct AribASSRegion
     int height = 0;
     int charHeight = 0;   // glyph height only (excludes vertical spacing)
     int cellWidth = 0;
-    bool isRuby = false;
+    bool isRuby     = false;
+    bool isVertical = false;  // vertical writing: never merge, positioned individually
     uint32_t backColor = 0;
     std::string text;
 };
+
+// True when consecutive characters in the region advance in Y (vertical writing).
+static bool IsVerticalRegion(const aribcc_caption_region_t &region)
+{
+    if (region.char_count < 2) return false;
+    int dy = region.chars[1].y - region.chars[0].y;
+    int dx = region.chars[1].x - region.chars[0].x;
+    return std::abs(dy) > std::abs(dx);
+}
+
+// Build style + text payload for a single ARIB character (no \fsp).
+static std::string BuildASSSingleCharText(const aribcc_caption_t &caption,
+                                          const aribcc_caption_char_t &ch)
+{
+    std::string result;
+    int scaledH = (int)std::floor(ch.char_height * ch.char_vertical_scale);
+    int assFs   = (caption.plane_height > 0 && scaledH > 0)
+                  ? (int)(scaledH * 1080.0 / caption.plane_height) : 0;
+    if (assFs > 0) { char b[32]; snprintf(b, sizeof(b), "{\\fs%d}", assFs); result += b; }
+    {
+        char b[64];
+        snprintf(b, sizeof(b), "{\\c&H%02X%02X%02X&}",
+                 ARIBCC_COLOR_B(ch.text_color),
+                 ARIBCC_COLOR_G(ch.text_color),
+                 ARIBCC_COLOR_R(ch.text_color));
+        result += b;
+    }
+    if (ch.style & ARIBCC_CHARSTYLE_BOLD)      result += "{\\b1}";
+    if (ch.style & ARIBCC_CHARSTYLE_ITALIC)    result += "{\\i1}";
+    if (ch.style & ARIBCC_CHARSTYLE_UNDERLINE) result += "{\\u1}";
+    if (ch.u8str[0] != '\0') result += ch.u8str;
+    return result;
+}
 
 struct ASSEvent
 {
@@ -571,8 +618,9 @@ static int AssLineGapSpaces(const AribASSRegion &group, const AribASSRegion &reg
 // Returns ASS Dialogue payloads per visual text run.
 // Layer 0 events carry the background rectangle (drawing command).
 // Layer 1 events carry the caption text with no box background.
-// Ruby regions are Layer 1 only (no background rect).
-static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption)
+// Ruby / vertical-text regions are Layer 1 only (no background rect for ruby).
+static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption,
+                                                  const AribCaptionSettings &settings)
 {
     // Build an ASS Dialogue line body from libaribcaption output.
 
@@ -602,6 +650,28 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
 
         if (caption.plane_width > 0 && caption.plane_height > 0)
         {
+            // Vertical writing: split into one AribASSRegion per character.
+            if (!region.is_ruby && IsVerticalRegion(region))
+            {
+                for (uint32_t ci = 0; ci < region.char_count; ci++)
+                {
+                    const aribcc_caption_char_t &ch = region.chars[ci];
+                    AribASSRegion vr;
+                    vr.x          = ch.x;
+                    vr.y          = ch.y;
+                    vr.right      = ch.x + AribSectionWidth(ch);
+                    vr.height     = AribSectionHeight(ch);
+                    vr.charHeight = (int)std::floor(ch.char_height * ch.char_vertical_scale);
+                    vr.cellWidth  = AribSectionWidth(ch);
+                    vr.isVertical = true;
+                    vr.backColor  = ch.back_color;
+                    vr.text       = BuildASSSingleCharText(caption, ch);
+                    if (!vr.text.empty())
+                        regions.push_back(vr);
+                }
+                continue;
+            }
+
             int regionX = region.x;
             int cellLeft, cellTop, cellRight, cellBottom;
             GetRegionCellBounds(region, cellLeft, cellTop, cellRight, cellBottom);
@@ -656,9 +726,7 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
         return a.x < b.x;
     });
 
-    const AribCaptionSettings settings = GetAribCaptionSettings();
-
-    // Pre-build per-event override tags (empty string when default/unused).
+    // Pre-build per-event override tags (empty when at default).
     char captionAlphaTag[16] = {};
     if (settings.captionAlpha > 0)
         snprintf(captionAlphaTag, sizeof(captionAlphaTag), "{\\1a&H%02X&}", (uint8_t)settings.captionAlpha);
@@ -666,6 +734,11 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
     char outlineTag[16] = {};
     if (settings.outlineWidth > 0)
         snprintf(outlineTag, sizeof(outlineTag), "{\\bord%d}", settings.outlineWidth);
+
+    // \fn tag — applied once per event; empty if no custom font.
+    std::string fontTag;
+    if (!settings.fontName.empty())
+        fontTag = "{\\fn" + settings.fontName + "}";
 
     std::vector<ASSEvent> results;
     AribASSRegion group;
@@ -686,8 +759,9 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
                 results.push_back({0, std::move(bg)});
         }
 
-        // Layer 1: text (caption alpha and outline applied if non-default).
+        // Layer 1: text (font / alpha / outline applied if non-default).
         std::string textPayload = BuildASSPositionTag(caption, group.x, group.y);
+        textPayload += fontTag;
         textPayload += captionAlphaTag;
         textPayload += outlineTag;
         textPayload += group.text;
@@ -699,15 +773,26 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
 
     for (const auto &region : regions)
     {
-        if (region.isRuby)
+        // Ruby and vertical chars are always emitted as individual events.
+        if (region.isRuby || region.isVertical)
         {
             flushGroup();
-            // Ruby: Layer 1 only, no background rect.
-            std::string rubyPayload = BuildASSPositionTag(caption, region.x, region.y);
-            rubyPayload += captionAlphaTag;
-            rubyPayload += outlineTag;
-            rubyPayload += region.text;
-            results.push_back({1, std::move(rubyPayload)});
+            if (region.isVertical && settings.showBackground)
+            {
+                // Vertical chars get a per-character background rect.
+                std::string bg = BuildASSBackgroundRect(caption,
+                    region.x, region.y,
+                    region.right, region.y + region.charHeight,
+                    region.backColor, settings.backgroundAlpha);
+                if (!bg.empty())
+                    results.push_back({0, std::move(bg)});
+            }
+            std::string payload = BuildASSPositionTag(caption, region.x, region.y);
+            payload += fontTag;
+            payload += captionAlphaTag;
+            payload += outlineTag;
+            payload += region.text;
+            results.push_back({1, std::move(payload)});
             continue;
         }
 
@@ -2317,7 +2402,10 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
 
                     if (status == ARIBCC_DECODE_STATUS_GOT_CAPTION)
                     {
-                        // Compute stop time before cleanup
+                        // Read INI settings (caption or superimpose).
+                        AribCaptionSettings captionSettings = GetAribCaptionSettings(isSuperimpose);
+
+                        // Compute stop time, then apply delay offset.
                         REFERENCE_TIME rtNewStop;
                         constexpr REFERENCE_TIME kIndefiniteChunk = 10LL * 10000000LL; // 10s
                         bool hasExplicitStop =
@@ -2326,11 +2414,17 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                             rtNewStop = pPacket->rtStart + caption.wait_duration * 10000LL;
                         else
                             rtNewStop = pPacket->rtStart + kIndefiniteChunk;
-                        ARIB_LOG("[ARIB] caption timing flags=0x%x wait=%lld start=%lld stop=%lld\n",
-                                 (unsigned)caption.flags, (long long)caption.wait_duration,
-                                 (long long)pPacket->rtStart, (long long)rtNewStop);
 
-                        std::vector<ASSEvent> regionTexts = BuildASSFromCaption(caption);
+                        REFERENCE_TIME delayHns = (REFERENCE_TIME)captionSettings.delayMs * 10000LL;
+                        pPacket->rtStart += delayHns;
+                        rtNewStop        += delayHns;
+
+                        ARIB_LOG("[ARIB] caption timing flags=0x%x wait=%lld start=%lld stop=%lld delay=%dms\n",
+                                 (unsigned)caption.flags, (long long)caption.wait_duration,
+                                 (long long)pPacket->rtStart, (long long)rtNewStop,
+                                 captionSettings.delayMs);
+
+                        std::vector<ASSEvent> regionTexts = BuildASSFromCaption(caption, captionSettings);
                         aribcc_caption_cleanup(&caption);
 
                         // Flatten for debug log
