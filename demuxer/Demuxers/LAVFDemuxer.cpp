@@ -33,7 +33,6 @@
 #include <algorithm>
 #include <climits>
 #include <cmath>
-#include <mutex>
 
 extern "C"
 {
@@ -276,11 +275,12 @@ static AribCaptionSettings LoadAribCaptionSettingsFromFile()
     return s;
 }
 
-static const AribCaptionSettings& GetAribCaptionSettings()
+static AribCaptionSettings GetAribCaptionSettings()
 {
-    // C++17 magic statics guarantee thread-safe one-time initialisation.
-    static const AribCaptionSettings s = LoadAribCaptionSettingsFromFile();
-    return s;
+    // Read from INI on every call so changes take effect without restarting
+    // the player. GetPrivateProfileInt internally caches the file on Windows,
+    // so the overhead for infrequent caption packets is negligible.
+    return LoadAribCaptionSettingsFromFile();
 }
 
 static double CaptionPlaneToASSScale(const aribcc_caption_t &caption)
@@ -651,7 +651,7 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
         return a.x < b.x;
     });
 
-    const AribCaptionSettings &settings = GetAribCaptionSettings();
+    const AribCaptionSettings settings = GetAribCaptionSettings();
 
     // Pre-build the \1a alpha override tag for text transparency (empty if opaque).
     char captionAlphaTag[16] = {};
