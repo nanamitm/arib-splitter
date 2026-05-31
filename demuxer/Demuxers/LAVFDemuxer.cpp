@@ -262,11 +262,6 @@ static int ScaleCaptionYToASSArea(const aribcc_caption_t &caption, double y)
     return (int)std::lround(offsetY + y * scale);
 }
 
-static double AribGlyphInsetX(const aribcc_caption_char_t &ch)
-{
-    return (double)ch.char_horizontal_spacing * ch.char_horizontal_scale / 2.0;
-}
-
 static void GetRegionCellBounds(const aribcc_caption_region_t &region,
                                 int &left, int &top, int &right, int &bottom)
 {
@@ -375,6 +370,21 @@ static std::string BuildASSPositionTag(const aribcc_caption_t &caption, int x, i
 static std::string BuildASSRegionText(const aribcc_caption_t &caption, const aribcc_caption_region_t &region)
 {
     std::string result;
+
+    // Emit \fsp once for the region to replicate ARIB char_horizontal_spacing.
+    // Without this, consecutive characters in a merged string accumulate horizontal error
+    // of (section_width - char_width) * scale per character.
+    if (region.char_count > 0 && caption.plane_height > 0)
+    {
+        const aribcc_caption_char_t &fc = region.chars[0];
+        double fsp = fc.char_horizontal_spacing * fc.char_horizontal_scale * CaptionPlaneToASSScale(caption);
+        if (fsp > 0.0)
+        {
+            char fspBuf[32];
+            snprintf(fspBuf, sizeof(fspBuf), "{\\fsp%.1f}", fsp);
+            result += fspBuf;
+        }
+    }
 
     // Append each character with inline style overrides
     for (uint32_t ci = 0; ci < region.char_count; ci++)
@@ -497,9 +507,9 @@ static std::vector<std::string> BuildASSFromCaption(const aribcc_caption_t &capt
             }
 
             AribASSRegion assRegion;
-            assRegion.x = (int)std::lround(regionX + AribGlyphInsetX(region.chars[0]));
+            assRegion.x = (int)std::lround(regionX);
             assRegion.y = cellTop;
-            assRegion.right = assRegion.x + (cellRight - cellLeft);
+            assRegion.right = cellRight;
             assRegion.height = cellBottom - cellTop;
             assRegion.cellWidth = AribSectionWidth(region.chars[0]);
             assRegion.isRuby = region.is_ruby;
@@ -513,7 +523,7 @@ static std::vector<std::string> BuildASSFromCaption(const aribcc_caption_t &capt
             GetRegionCellBounds(region, cellLeft, cellTop, cellRight, cellBottom);
 
             AribASSRegion assRegion;
-            assRegion.x = (int)std::lround(cellLeft + AribGlyphInsetX(region.chars[0]));
+            assRegion.x = cellLeft;
             assRegion.y = cellTop;
             assRegion.right = cellRight;
             assRegion.height = cellBottom - cellTop;
