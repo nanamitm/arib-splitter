@@ -786,50 +786,71 @@ static std::string BuildASSBackgroundRect(const aribcc_caption_t &caption,
     return buf;
 }
 
-// Return the GDI advance width (pixels) of a representative full-width character
-// for the given font at the given ASS font size.  Falls back to assFs when the
-// font is not installed or measurement fails.  Results are cached.
-static int MeasureFontAdvance(const std::string &fontNameUtf8, int assFs)
+// Strip ASS override tags ({...}) from a UTF-8 payload and return the plain
+// text as a wide string suitable for GDI measurement.
+static std::wstring ExtractPlainTextW(const std::string &assText)
 {
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, assText.c_str(), -1, nullptr, 0);
+    if (wlen <= 1) return {};
+    std::wstring wide(wlen - 1, 0);
+    MultiByteToWideChar(CP_UTF8, 0, assText.c_str(), -1, &wide[0], wlen);
+
+    std::wstring plain;
+    plain.reserve(wide.size());
+    int depth = 0;
+    for (WCHAR c : wide) {
+        if      (c == L'{') { ++depth; }
+        else if (c == L'}') { if (depth > 0) --depth; }
+        else if (depth == 0) plain += c;
+    }
+    return plain;
+}
+
+// Measure the GDI advance width of |plainText| in the given font.
+// A (fontName, assFs) → (HDC, HFONT) pair is cached for the process lifetime
+// to avoid repeatedly creating GDI objects.
+static int MeasureTextExtent(const std::wstring &plainText,
+                              const std::string &fontNameUtf8, int assFs)
+{
+    if (plainText.empty() || assFs <= 0) return 0;
+
     using Key = std::pair<std::string, int>;
-    static std::map<Key, int> cache;
+    static std::map<Key, std::pair<HDC, HFONT>> fontCache;
+
     Key key{fontNameUtf8, assFs};
-    auto it = cache.find(key);
-    if (it != cache.end()) return it->second;
-
-    int result = assFs; // safe fallback
-
-    std::wstring fontW;
-    if (!fontNameUtf8.empty())
+    auto it = fontCache.find(key);
+    if (it == fontCache.end())
     {
-        int n = MultiByteToWideChar(CP_UTF8, 0, fontNameUtf8.c_str(), -1, nullptr, 0);
-        if (n > 1) { fontW.resize(n - 1); MultiByteToWideChar(CP_UTF8, 0, fontNameUtf8.c_str(), -1, &fontW[0], n); }
-    }
-    if (fontW.empty()) fontW = L"MS Gothic";
-
-    HDC hdc = CreateCompatibleDC(nullptr);
-    if (hdc)
-    {
-        // Negative nHeight → cell height = assFs; GDI matches ASS font-size semantics.
-        HFONT hf = CreateFontW(-assFs, 0, 0, 0, FW_NORMAL, 0, 0, 0,
-                                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, fontW.c_str());
-        if (hf)
-        {
-            HFONT old = (HFONT)SelectObject(hdc, hf);
-            SIZE sz{};
-            // U+3042 (hiragana 'a') is a reliable representative for CJK advance width.
-            static const WCHAR kProbe[] = { 0x3042, 0 };
-            if (GetTextExtentPoint32W(hdc, kProbe, 1, &sz))
-                result = sz.cx;
-            SelectObject(hdc, old);
-            DeleteObject(hf);
+        std::wstring fontW;
+        if (!fontNameUtf8.empty()) {
+            int n = MultiByteToWideChar(CP_UTF8, 0, fontNameUtf8.c_str(), -1, nullptr, 0);
+            if (n > 1) { fontW.resize(n - 1); MultiByteToWideChar(CP_UTF8, 0, fontNameUtf8.c_str(), -1, &fontW[0], n); }
         }
-        DeleteDC(hdc);
+        if (fontW.empty()) fontW = L"MS Gothic";
+
+        HDC hdc = CreateCompatibleDC(nullptr);
+        HFONT hf = hdc ? CreateFontW(-assFs, 0, 0, 0, FW_NORMAL, 0, 0, 0,
+                                      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                      DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, fontW.c_str())
+                       : nullptr;
+        if (hdc && hf)
+            SelectObject(hdc, hf);
+        else {
+            if (hf)  DeleteObject(hf);
+            if (hdc) DeleteDC(hdc);
+            hdc = nullptr; hf = nullptr;
+        }
+        fontCache[key] = {hdc, hf};
+        it = fontCache.find(key);
     }
 
-    cache[key] = result;
-    return result;
+    auto [hdc, hf] = it->second;
+    if (!hdc || !hf)
+        return (int)(plainText.size() * assFs); // fallback
+
+    SIZE sz{};
+    return GetTextExtentPoint32W(hdc, plainText.c_str(), (int)plainText.size(), &sz)
+           ? sz.cx : (int)(plainText.size() * assFs);
 }
 
 static int AssLineGapSpaces(const AribASSRegion &group, const AribASSRegion &region)
@@ -990,8 +1011,11 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
                     ? (int)(r.charHeight * 1080.0 / caption.plane_height) : 0;
         if (assFs <= 0) return;
 
-        int advance = MeasureFontAdvance(settings.fontName, assFs);
-        double bgWidthASS = r.charCount * (advance + r.fspASS);
+        // Measure the actual text string so the rect matches for any font.
+        // GDI width covers natural advances; add \fsp contribution separately.
+        std::wstring plain = ExtractPlainTextW(r.text);
+        int gdiWidth = MeasureTextExtent(plain, settings.fontName, assFs);
+        double bgWidthASS = gdiWidth + r.charCount * r.fspASS;
 
         int x1 = ScaleCaptionXToASSArea(caption, r.x);
         int y1 = ScaleCaptionYToASSArea(caption, r.y);
