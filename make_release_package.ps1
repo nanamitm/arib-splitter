@@ -32,6 +32,9 @@ $rootFiles = @(
     "COPYING"
 )
 
+# settings/ARIBSplitter.ini → ARIBSplitter.ini in the package root
+$iniSrc = Join-Path $repoRoot "settings\ARIBSplitter.ini"
+
 if (-not (Test-Path -LiteralPath $binDir)) {
     throw "Build output directory was not found: $binDir"
 }
@@ -50,6 +53,10 @@ foreach ($file in $rootFiles) {
     }
 }
 
+if (-not (Test-Path -LiteralPath $iniSrc)) {
+    throw "Required package file was not found: $iniSrc"
+}
+
 New-Item -ItemType Directory -Force -Path $distRoot | Out-Null
 if (Test-Path -LiteralPath $packageDir) {
     Remove-Item -LiteralPath $packageDir -Recurse -Force
@@ -64,13 +71,15 @@ foreach ($file in $rootFiles) {
     Copy-Item -LiteralPath (Join-Path $repoRoot $file) -Destination (Join-Path $packageDir $file)
 }
 
+Copy-Item -LiteralPath $iniSrc -Destination (Join-Path $packageDir "ARIBSplitter.ini")
+
 $manifest = @(
     "ARIBSplitter release package",
     "Version: $Version",
     "Platform: $Platform",
     "",
     "Files:",
-    ($payload + $rootFiles | Sort-Object | ForEach-Object { "  $_" })
+    ($payload + $rootFiles + @("ARIBSplitter.ini") | Sort-Object | ForEach-Object { "  $_" })
 )
 $manifest | Set-Content -LiteralPath (Join-Path $packageDir "PACKAGE.txt") -Encoding ASCII
 
