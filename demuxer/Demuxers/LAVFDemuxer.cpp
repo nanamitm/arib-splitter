@@ -476,24 +476,24 @@ static double CaptionPlaneToASSScale(const aribcc_caption_t &caption)
 static int ScaleCaptionXToASSArea(const aribcc_caption_t &caption, double x)
 {
     if (caption.plane_width <= 0 || caption.plane_height <= 0)
-        return (int)std::lround(x);
+        return (int)std::floor(x);
 
     double scale = CaptionPlaneToASSScale(caption);
     double offsetX = (1920.0 - caption.plane_width * scale) / 2.0;
-    return (int)std::lround(offsetX + x * scale);
+    return (int)std::floor(offsetX + x * scale);
 }
 
 static int ScaleCaptionYToASSArea(const aribcc_caption_t &caption, double y)
 {
     if (caption.plane_width <= 0 || caption.plane_height <= 0)
-        return (int)std::lround(y);
+        return (int)std::floor(y);
 
     double scale = CaptionPlaneToASSScale(caption);
     double offsetY = (1080.0 - caption.plane_height * scale) / 2.0;
-    return (int)std::lround(offsetY + y * scale);
+    return (int)std::floor(offsetY + y * scale);
 }
 
-static std::string BuildASSPositionTag(const aribcc_caption_t &caption, int x, int y)
+static std::string BuildASSPositionTag(const aribcc_caption_t &caption, double x, double y)
 {
     char posBuf[64];
     if (caption.plane_width > 0 && caption.plane_height > 0)
@@ -513,6 +513,8 @@ struct AribASSRegion
 {
     int x = 0;
     int y = 0;
+    double textX = 0.0;
+    double textY = 0.0;
     int right = 0;
     int charHeight = 0;   // glyph height only (excludes vertical spacing)
     bool isRuby     = false;
@@ -528,6 +530,16 @@ static bool IsVerticalRegion(const aribcc_caption_region_t &region)
     int dy = region.chars[1].y - region.chars[0].y;
     int dx = region.chars[1].x - region.chars[0].x;
     return std::abs(dy) > std::abs(dx);
+}
+
+static double AribTextOffsetX(const aribcc_caption_char_t &ch)
+{
+    return ch.char_horizontal_spacing * ch.char_horizontal_scale / 2.0;
+}
+
+static double AribTextOffsetY(const aribcc_caption_char_t &ch)
+{
+    return ch.char_vertical_spacing * ch.char_vertical_scale / 2.0;
 }
 
 // Build style + text payload for a single ARIB character (no \fsp).
@@ -613,6 +625,8 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
                     AribASSRegion vr;
                     vr.x          = ch.x;
                     vr.y          = ch.y;
+                    vr.textX      = ch.x + AribTextOffsetX(ch);
+                    vr.textY      = ch.y + AribTextOffsetY(ch);
                     vr.right      = ch.x + AribSectionWidth(ch);
                     vr.charHeight = (int)std::floor(ch.char_height * ch.char_vertical_scale);
                     vr.isVertical = true;
@@ -633,6 +647,8 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
                 AribASSRegion cr;
                 cr.x          = ch.x;
                 cr.y          = ch.y;
+                cr.textX      = ch.x + AribTextOffsetX(ch);
+                cr.textY      = ch.y + AribTextOffsetY(ch);
                 cr.right      = ch.x + AribSectionWidth(ch);
                 cr.charHeight = (int)std::floor(ch.char_height * ch.char_vertical_scale);
                 cr.isRuby     = region.is_ruby;
@@ -650,6 +666,8 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
                 AribASSRegion cr;
                 cr.x          = ch.x;
                 cr.y          = ch.y;
+                cr.textX      = ch.x + AribTextOffsetX(ch);
+                cr.textY      = ch.y + AribTextOffsetY(ch);
                 cr.right      = ch.x + AribSectionWidth(ch);
                 cr.charHeight = (int)std::floor(ch.char_height * ch.char_vertical_scale);
                 cr.isRuby     = region.is_ruby;
@@ -693,9 +711,9 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
         if (assFs <= 0) return;
 
         int x1 = ScaleCaptionXToASSArea(caption, r.x);
-        int y1 = ScaleCaptionYToASSArea(caption, r.y);
+        int y1 = ScaleCaptionYToASSArea(caption, r.textY);
         int x2 = ScaleCaptionXToASSArea(caption, r.right);
-        int y2 = ScaleCaptionYToASSArea(caption, r.y + r.charHeight);
+        int y2 = ScaleCaptionYToASSArea(caption, r.textY + r.charHeight);
         if (x1 >= x2 || y1 >= y2) return;
 
         uint8_t b = ARIBCC_COLOR_B(r.backColor);
@@ -726,7 +744,7 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
         if (!region.isRuby)
             emitBackground(region);
 
-        std::string payload = BuildASSPositionTag(caption, region.x, region.y);
+        std::string payload = BuildASSPositionTag(caption, region.textX, region.textY);
         payload += fontTag;
         payload += captionAlphaTag;
         payload += outlineTag;
