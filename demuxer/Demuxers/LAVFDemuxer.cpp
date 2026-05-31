@@ -447,10 +447,45 @@ struct AribASSRegion
     int y = 0;
     int right = 0;
     int height = 0;
+    int charHeight = 0;   // glyph height only (excludes vertical spacing)
     int cellWidth = 0;
     bool isRuby = false;
+    uint32_t backColor = 0;
     std::string text;
 };
+
+struct ASSEvent
+{
+    int layer = 1;
+    std::string payload;
+};
+
+static std::string BuildASSBackgroundRect(const aribcc_caption_t &caption,
+                                          int planeX1, int planeY1,
+                                          int planeX2, int planeY2,
+                                          uint32_t backColor)
+{
+    int x1 = ScaleCaptionXToASSArea(caption, planeX1);
+    int y1 = ScaleCaptionYToASSArea(caption, planeY1);
+    int x2 = ScaleCaptionXToASSArea(caption, planeX2);
+    int y2 = ScaleCaptionYToASSArea(caption, planeY2);
+    if (x1 >= x2 || y1 >= y2)
+        return {};
+
+    uint8_t b = ARIBCC_COLOR_B(backColor);
+    uint8_t g = ARIBCC_COLOR_G(backColor);
+    uint8_t r = ARIBCC_COLOR_R(backColor);
+    uint8_t a = ARIBCC_COLOR_A(backColor);
+    uint8_t assAlpha = (a > 0) ? (255 - a) : 0x80;
+
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+        "{\\an7\\pos(0,0)\\p1\\1c&H%02X%02X%02X&\\1a&H%02X&}"
+        "m %d %d l %d %d %d %d %d %d{\\p0}",
+        b, g, r, assAlpha,
+        x1, y1, x2, y1, x2, y2, x1, y2);
+    return buf;
+}
 
 static int AssLineGapSpaces(const AribASSRegion &group, const AribASSRegion &region)
 {
@@ -462,10 +497,11 @@ static int AssLineGapSpaces(const AribASSRegion &group, const AribASSRegion &reg
     return (std::min)(8, gap / cellWidth);
 }
 
-// Returns one ASS payload string per visual text run. Non-ruby regions on the
-// same line are merged into one Dialogue so text and background are rendered
-// as a single subtitle line instead of overlapping separate events.
-static std::vector<std::string> BuildASSFromCaption(const aribcc_caption_t &caption)
+// Returns ASS Dialogue payloads per visual text run.
+// Layer 0 events carry the background rectangle (drawing command).
+// Layer 1 events carry the caption text with no box background.
+// Ruby regions are Layer 1 only (no background rect).
+static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption)
 {
     // Build an ASS Dialogue line body from libaribcaption output.
 
@@ -511,8 +547,11 @@ static std::vector<std::string> BuildASSFromCaption(const aribcc_caption_t &capt
             assRegion.y = cellTop;
             assRegion.right = cellRight;
             assRegion.height = cellBottom - cellTop;
+            assRegion.charHeight = (int)std::floor(
+                region.chars[0].char_height * region.chars[0].char_vertical_scale);
             assRegion.cellWidth = AribSectionWidth(region.chars[0]);
             assRegion.isRuby = region.is_ruby;
+            assRegion.backColor = region.chars[0].back_color;
             assRegion.text = BuildASSRegionText(caption, region);
             if (!assRegion.text.empty())
                 regions.push_back(assRegion);
@@ -527,8 +566,11 @@ static std::vector<std::string> BuildASSFromCaption(const aribcc_caption_t &capt
             assRegion.y = cellTop;
             assRegion.right = cellRight;
             assRegion.height = cellBottom - cellTop;
+            assRegion.charHeight = (int)std::floor(
+                region.chars[0].char_height * region.chars[0].char_vertical_scale);
             assRegion.cellWidth = AribSectionWidth(region.chars[0]);
             assRegion.isRuby = region.is_ruby;
+            assRegion.backColor = region.chars[0].back_color;
             assRegion.text = BuildASSRegionText(caption, region);
             if (!assRegion.text.empty())
                 regions.push_back(assRegion);
@@ -543,13 +585,27 @@ static std::vector<std::string> BuildASSFromCaption(const aribcc_caption_t &capt
         return a.x < b.x;
     });
 
-    std::vector<std::string> results;
+    std::vector<ASSEvent> results;
     AribASSRegion group;
     bool hasGroup = false;
     auto flushGroup = [&]() {
         if (!hasGroup)
             return;
-        results.push_back(BuildASSPositionTag(caption, group.x, group.y) + group.text);
+
+        // Layer 0: background rectangle sized to the glyph area only.
+        if (ARIBCC_COLOR_A(group.backColor) > 0)
+        {
+            std::string bg = BuildASSBackgroundRect(caption,
+                group.x, group.y,
+                group.right, group.y + group.charHeight,
+                group.backColor);
+            if (!bg.empty())
+                results.push_back({0, std::move(bg)});
+        }
+
+        // Layer 1: text, no box background (handled by Layer 0).
+        results.push_back({1, BuildASSPositionTag(caption, group.x, group.y) + group.text});
+
         hasGroup = false;
         group = AribASSRegion();
     };
@@ -559,7 +615,8 @@ static std::vector<std::string> BuildASSFromCaption(const aribcc_caption_t &capt
         if (region.isRuby)
         {
             flushGroup();
-            results.push_back(BuildASSPositionTag(caption, region.x, region.y) + region.text);
+            // Ruby: Layer 1 only, no background rect.
+            results.push_back({1, BuildASSPositionTag(caption, region.x, region.y) + region.text});
             continue;
         }
 
@@ -579,6 +636,7 @@ static std::vector<std::string> BuildASSFromCaption(const aribcc_caption_t &capt
             group.text += region.text;
             group.right = (std::max)(group.right, region.right);
             group.height = (std::max)(group.height, region.height);
+            group.charHeight = (std::max)(group.charHeight, region.charHeight);
             group.cellWidth = (std::max)(group.cellWidth, region.cellWidth);
         }
         else
@@ -590,9 +648,9 @@ static std::vector<std::string> BuildASSFromCaption(const aribcc_caption_t &capt
     }
     flushGroup();
 
-    // Fallback: if no regions produced output, use plain text representation
+    // Fallback: if no regions produced output, use plain text representation.
     if (results.empty() && caption.text && caption.text[0] != '\0')
-        results.push_back(caption.text);
+        results.push_back({1, std::string(caption.text)});
 
     return results;
 }
@@ -2181,13 +2239,13 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                                  (unsigned)caption.flags, (long long)caption.wait_duration,
                                  (long long)pPacket->rtStart, (long long)rtNewStop);
 
-                        std::vector<std::string> regionTexts = BuildASSFromCaption(caption);
+                        std::vector<ASSEvent> regionTexts = BuildASSFromCaption(caption);
                         aribcc_caption_cleanup(&caption);
 
                         // Flatten for debug log
-                        ARIB_LOG("[ARIB] assText(%zu regions): %s\n", regionTexts.size(),
+                        ARIB_LOG("[ARIB] assText(%zu events): %s\n", regionTexts.size(),
                                  regionTexts.empty() ? "(empty)" :
-                                 regionTexts[0].substr(0, 100).c_str());
+                                 regionTexts[0].payload.substr(0, 100).c_str());
 
                         // Helper: release pending packet with corrected rtStop and
                         // queue its extra regions (ruby etc.).
@@ -2265,12 +2323,13 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                             // Release previous pending (corrected rtStop = this event's start)
                             toDeliver = flushPending(streamIdx, pPacket->rtStart);
 
-                            // Build region 0.
+                            // Build event 0 (main packet).
                             {
+                                const ASSEvent &ev = regionTexts[0];
                                 LONG ro = InterlockedIncrement(&s_readOrder);
                                 char roPrefix[32];
-                                snprintf(roPrefix, sizeof(roPrefix), "%ld,0,Default,,0,0,0,,", ro);
-                                std::string payload = roPrefix + regionTexts[0];
+                                snprintf(roPrefix, sizeof(roPrefix), "%ld,%d,Default,,0,0,0,,", ro, ev.layer);
+                                std::string payload = roPrefix + ev.payload;
                                 pPacket->rtStop = rtNewStop;
                                 pPacket->SetData(payload.c_str(), (int)payload.size());
                                 pPacket->dwFlags |= LAV_PACKET_PARSED;
@@ -2282,6 +2341,7 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                             extras.clear();
                             for (size_t ri = 1; ri < regionTexts.size(); ri++)
                             {
+                                const ASSEvent &ev = regionTexts[ri];
                                 Packet *rPkt = new Packet();
                                 if (!rPkt) break;
                                 rPkt->StreamId = (DWORD)streamIdx;
@@ -2291,8 +2351,8 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                                 rPkt->dwFlags = LAV_PACKET_PARSED;
                                 LONG ro = InterlockedIncrement(&s_readOrder);
                                 char roPrefix[32];
-                                snprintf(roPrefix, sizeof(roPrefix), "%ld,0,Default,,0,0,0,,", ro);
-                                std::string payload = roPrefix + regionTexts[ri];
+                                snprintf(roPrefix, sizeof(roPrefix), "%ld,%d,Default,,0,0,0,,", ro, ev.layer);
+                                std::string payload = roPrefix + ev.payload;
                                 rPkt->SetData(payload.c_str(), (int)payload.size());
                                 currentExtras.push_back(rPkt);
                             }
