@@ -118,6 +118,60 @@ The package is written under `dist\` and includes `ARIBSplitter.ax`, required
 runtime DLLs, install/uninstall scripts, `README.md`, `COPYING`, and a small
 `PACKAGE.txt` manifest.
 
+## Configuration
+
+Place `ARIBSplitter.ini` in the same folder as `ARIBSplitter.ax`.
+A sample with all available keys is provided in `settings/ARIBSplitter.ini`.
+
+### [ARIB] — caption settings
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `FontName` | MS Gothic | Caption font |
+| `CaptionTransparency` | 0 | Text transparency 0 (opaque) – 100 (invisible) |
+| `BackgroundTransparency` | *(stream)* | Background transparency 0–100; omit to use the value embedded in the stream |
+| `ShowBackground` | 1 | `0` to hide the caption background |
+| `OutlineWidth` | 0 | Text outline thickness (ASS `\bord` value, 0 = none) |
+| `DelayMs` | 0 | Caption timing offset in milliseconds; negative values advance display |
+| `DRCSSaveBmp` | 0 | `1` to save unmapped DRCS characters as BMP files |
+| `DRCSSaveDir` | `.\DRCS` | Folder for saved DRCS BMP files (relative paths resolved from the DLL location) |
+
+### [Superimpose] — superimpose-specific overrides
+
+Same keys as `[ARIB]`.  Any key omitted here falls back to the `[ARIB]` value.
+Useful for giving news-ticker superimpose a different transparency or font.
+
+### [DRCSMap] — DRCS character substitution
+
+DRCS (Dynamically Redefinable Character Set) characters are broadcaster-defined
+bitmap glyphs transmitted within the caption stream.  libaribcaption maps known
+characters automatically; unknown ones are blank by default.
+
+**Workflow to add mappings:**
+
+1. Set `DRCSSaveBmp=1` in `[ARIB]` and play a broadcast that uses the character.
+2. ARIBSplitter saves `{MD5}.bmp` in `DRCSSaveDir` once per unique glyph.
+3. Open each BMP, identify the character, and add an entry:
+
+```ini
+[DRCSMap]
+030B487AE68DA1F4DA98046F4FED390F=Ｎ
+4360DD96063CE1A9660CC8437E8238E3=⬛
+```
+
+The map is re-read every 5 seconds, so edits take effect without restarting the
+player.
+
+> **INI encoding:** To use characters outside Shift-JIS (e.g. rare kanji or
+> symbols) save `ARIBSplitter.ini` as **UTF-16 LE** (called "Unicode" in Windows
+> Notepad).  The Windows INI API reads UTF-16 LE files natively when a BOM is
+> present.
+
+> **Font recommendation:** MS Gothic (the default) covers standard ARIB caption
+> characters.  If DRCS substitutions include characters outside MS Gothic's
+> coverage — such as CJK Extension glyphs or rare kanji variants — consider
+> setting `FontName=Noto Sans JP` (requires the font to be installed separately).
+
 ## Notes
 
 ARIBSplitter keeps LAV Filters' original license and upstream structure.  See
