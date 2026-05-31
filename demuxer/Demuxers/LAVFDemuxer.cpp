@@ -704,21 +704,21 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
     std::vector<ASSEvent> results;
     // Emit a Layer 0 background rect using the ARIB cell width. Ruby remains
     // background-free so it does not create a second band above the base text.
-    auto emitBackground = [&](const AribASSRegion &r) {
+    auto emitBackgroundRect = [&](int x, double textY, int right, int charHeight, uint32_t backColor) {
         if (!settings.showBackground) return;
-        int assFs = (caption.plane_height > 0 && r.charHeight > 0)
-                    ? (int)(r.charHeight * 1080.0 / caption.plane_height) : 0;
+        int assFs = (caption.plane_height > 0 && charHeight > 0)
+                    ? (int)(charHeight * 1080.0 / caption.plane_height) : 0;
         if (assFs <= 0) return;
 
-        int x1 = ScaleCaptionXToASSArea(caption, r.x);
-        int y1 = ScaleCaptionYToASSArea(caption, r.textY);
-        int x2 = ScaleCaptionXToASSArea(caption, r.right);
-        int y2 = ScaleCaptionYToASSArea(caption, r.textY + r.charHeight);
+        int x1 = ScaleCaptionXToASSArea(caption, x);
+        int y1 = ScaleCaptionYToASSArea(caption, textY);
+        int x2 = ScaleCaptionXToASSArea(caption, right);
+        int y2 = ScaleCaptionYToASSArea(caption, textY + charHeight);
         if (x1 >= x2 || y1 >= y2) return;
 
-        uint8_t b = ARIBCC_COLOR_B(r.backColor);
-        uint8_t g = ARIBCC_COLOR_G(r.backColor);
-        uint8_t rv = ARIBCC_COLOR_R(r.backColor);
+        uint8_t b = ARIBCC_COLOR_B(backColor);
+        uint8_t g = ARIBCC_COLOR_G(backColor);
+        uint8_t rv = ARIBCC_COLOR_R(backColor);
         uint8_t assAlpha;
         if (settings.backgroundAlpha >= 0)
         {
@@ -727,7 +727,7 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
         }
         else
         {
-            uint8_t a = ARIBCC_COLOR_A(r.backColor);
+            uint8_t a = ARIBCC_COLOR_A(backColor);
             if (a == 0) return;
             assAlpha = 255 - a;
         }
@@ -739,11 +739,50 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
         results.push_back({0, std::string(buf)});
     };
 
+    bool hasBackgroundRun = false;
+    AribASSRegion backgroundRun;
+    auto flushBackgroundRun = [&]() {
+        if (!hasBackgroundRun) return;
+        emitBackgroundRect(backgroundRun.x, backgroundRun.textY, backgroundRun.right,
+                           backgroundRun.charHeight, backgroundRun.backColor);
+        hasBackgroundRun = false;
+    };
+
     for (const auto &region : regions)
     {
-        if (!region.isRuby)
-            emitBackground(region);
+        if (region.isRuby)
+            continue;
 
+        if (region.isVertical)
+        {
+            flushBackgroundRun();
+            emitBackgroundRect(region.x, region.textY, region.right, region.charHeight, region.backColor);
+            continue;
+        }
+
+        const bool sameRun =
+            hasBackgroundRun &&
+            backgroundRun.y == region.y &&
+            std::abs(backgroundRun.textY - region.textY) < 0.5 &&
+            backgroundRun.charHeight == region.charHeight &&
+            backgroundRun.backColor == region.backColor &&
+            region.x <= backgroundRun.right;
+
+        if (!sameRun)
+        {
+            flushBackgroundRun();
+            backgroundRun = region;
+            hasBackgroundRun = true;
+            continue;
+        }
+
+        if (region.right > backgroundRun.right)
+            backgroundRun.right = region.right;
+    }
+    flushBackgroundRun();
+
+    for (const auto &region : regions)
+    {
         std::string payload = BuildASSPositionTag(caption, region.textX, region.textY);
         payload += fontTag;
         payload += captionAlphaTag;
