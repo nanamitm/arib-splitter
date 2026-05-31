@@ -237,6 +237,7 @@ struct AribCaptionSettings
     int  captionAlpha     = 0;   // ASS alpha for text: 0=opaque, 255=fully transparent
     int  backgroundAlpha  = -1;  // -1=use ARIB data alpha, 0-255=fixed override
     bool showBackground   = true;
+    int  outlineWidth     = 0;   // \bord value in ASS units (0=no outline)
 };
 
 static AribCaptionSettings LoadAribCaptionSettingsFromFile()
@@ -271,6 +272,10 @@ static AribCaptionSettings LoadAribCaptionSettingsFromFile()
 
     // ShowBackground: 1=show (default), 0=hide
     s.showBackground = GetPrivateProfileIntW(L"ARIB", L"ShowBackground", 1, iniPath) != 0;
+
+    // OutlineWidth: 0=no outline (default), 1-10=ASS \bord value
+    int outline      = (int)GetPrivateProfileIntW(L"ARIB", L"OutlineWidth", 0, iniPath);
+    s.outlineWidth   = max(0, min(10, outline));
 
     return s;
 }
@@ -653,10 +658,14 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
 
     const AribCaptionSettings settings = GetAribCaptionSettings();
 
-    // Pre-build the \1a alpha override tag for text transparency (empty if opaque).
+    // Pre-build per-event override tags (empty string when default/unused).
     char captionAlphaTag[16] = {};
     if (settings.captionAlpha > 0)
         snprintf(captionAlphaTag, sizeof(captionAlphaTag), "{\\1a&H%02X&}", (uint8_t)settings.captionAlpha);
+
+    char outlineTag[16] = {};
+    if (settings.outlineWidth > 0)
+        snprintf(outlineTag, sizeof(outlineTag), "{\\bord%d}", settings.outlineWidth);
 
     std::vector<ASSEvent> results;
     AribASSRegion group;
@@ -677,9 +686,10 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
                 results.push_back({0, std::move(bg)});
         }
 
-        // Layer 1: text (caption alpha applied if non-zero).
+        // Layer 1: text (caption alpha and outline applied if non-default).
         std::string textPayload = BuildASSPositionTag(caption, group.x, group.y);
         textPayload += captionAlphaTag;
+        textPayload += outlineTag;
         textPayload += group.text;
         results.push_back({1, std::move(textPayload)});
 
@@ -695,6 +705,7 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
             // Ruby: Layer 1 only, no background rect.
             std::string rubyPayload = BuildASSPositionTag(caption, region.x, region.y);
             rubyPayload += captionAlphaTag;
+            rubyPayload += outlineTag;
             rubyPayload += region.text;
             results.push_back({1, std::move(rubyPayload)});
             continue;
