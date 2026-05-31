@@ -12,9 +12,9 @@ through DirectShow while exposing ARIB captions as subtitle samples.
 - MPEG-2 TS source filter registration for `.ts`, `.m2ts`, `.mts`, and `.m2t`
 - ARIB caption decoding through libaribcaption (Profile A / Profile C)
 - ASS subtitle output covering:
-  - Horizontal captions with correct inter-character spacing (`\fsp`)
+  - Horizontal captions positioned one ARIB cell at a time
   - Vertical writing (SWF mode 8/10) — characters positioned individually
-  - Multi-region same-line merging; ruby (furigana) independently positioned
+  - Ruby (furigana) positioned one ARIB cell at a time
   - Superimpose streams handled separately from normal captions
   - Layer 0 drawing-command background rectangle + Layer 1 text, preventing
     background overlap when multiple caption rows are on screen simultaneously
