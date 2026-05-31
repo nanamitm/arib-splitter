@@ -689,8 +689,10 @@ struct AribASSRegion
     int height = 0;
     int charHeight = 0;   // glyph height only (excludes vertical spacing)
     int cellWidth = 0;
+    int charCount  = 0;   // number of ARIB characters (for background width)
+    double fspASS  = 0.0; // \fsp value in ASS units (char_h_spacing * scale)
     bool isRuby     = false;
-    bool isVertical = false;  // vertical writing: never merge, positioned individually
+    bool isVertical = false;
     uint32_t backColor = 0;
     std::string text;
 };
@@ -784,6 +786,52 @@ static std::string BuildASSBackgroundRect(const aribcc_caption_t &caption,
     return buf;
 }
 
+// Return the GDI advance width (pixels) of a representative full-width character
+// for the given font at the given ASS font size.  Falls back to assFs when the
+// font is not installed or measurement fails.  Results are cached.
+static int MeasureFontAdvance(const std::string &fontNameUtf8, int assFs)
+{
+    using Key = std::pair<std::string, int>;
+    static std::map<Key, int> cache;
+    Key key{fontNameUtf8, assFs};
+    auto it = cache.find(key);
+    if (it != cache.end()) return it->second;
+
+    int result = assFs; // safe fallback
+
+    std::wstring fontW;
+    if (!fontNameUtf8.empty())
+    {
+        int n = MultiByteToWideChar(CP_UTF8, 0, fontNameUtf8.c_str(), -1, nullptr, 0);
+        if (n > 1) { fontW.resize(n - 1); MultiByteToWideChar(CP_UTF8, 0, fontNameUtf8.c_str(), -1, &fontW[0], n); }
+    }
+    if (fontW.empty()) fontW = L"MS Gothic";
+
+    HDC hdc = CreateCompatibleDC(nullptr);
+    if (hdc)
+    {
+        // Negative nHeight → cell height = assFs; GDI matches ASS font-size semantics.
+        HFONT hf = CreateFontW(-assFs, 0, 0, 0, FW_NORMAL, 0, 0, 0,
+                                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, fontW.c_str());
+        if (hf)
+        {
+            HFONT old = (HFONT)SelectObject(hdc, hf);
+            SIZE sz{};
+            // U+3042 (hiragana 'a') is a reliable representative for CJK advance width.
+            static const WCHAR kProbe[] = { 0x3042, 0 };
+            if (GetTextExtentPoint32W(hdc, kProbe, 1, &sz))
+                result = sz.cx;
+            SelectObject(hdc, old);
+            DeleteObject(hf);
+        }
+        DeleteDC(hdc);
+    }
+
+    cache[key] = result;
+    return result;
+}
+
 static int AssLineGapSpaces(const AribASSRegion &group, const AribASSRegion &region)
 {
     int gap = region.x - group.right;
@@ -795,10 +843,10 @@ static int AssLineGapSpaces(const AribASSRegion &group, const AribASSRegion &reg
 }
 
 // Returns ASS Dialogue payloads per visual text run.
-// Each event uses BorderStyle=3 (opaque box) so the ASS renderer auto-sizes
-// the background to the actual rendered text width — correct for any font.
-// Background colour/alpha are set via \4c/\4a per event from ARIB stream data
-// or INI overrides.  Ruby and vertical chars are emitted individually.
+// Layer 0: background rectangle whose width is derived from the actual GDI font
+//          advance (MeasureFontAdvance) so it matches the rendered text for any font.
+// Layer 1: caption text with no box background (BorderStyle=1).
+// Ruby and vertical chars are positioned individually.
 static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption,
                                                   const AribCaptionSettings &settings)
 {
@@ -873,6 +921,10 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
             assRegion.charHeight = (int)std::floor(
                 region.chars[0].char_height * region.chars[0].char_vertical_scale);
             assRegion.cellWidth = AribSectionWidth(region.chars[0]);
+            assRegion.charCount = (int)region.char_count;
+            assRegion.fspASS = region.chars[0].char_horizontal_spacing
+                             * region.chars[0].char_horizontal_scale
+                             * CaptionPlaneToASSScale(caption);
             assRegion.isRuby = region.is_ruby;
             assRegion.backColor = region.chars[0].back_color;
             assRegion.text = BuildASSRegionText(caption, region, settings, iniPath);
@@ -892,6 +944,9 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
             assRegion.charHeight = (int)std::floor(
                 region.chars[0].char_height * region.chars[0].char_vertical_scale);
             assRegion.cellWidth = AribSectionWidth(region.chars[0]);
+            assRegion.charCount = (int)region.char_count;
+            assRegion.fspASS = region.chars[0].char_horizontal_spacing
+                             * region.chars[0].char_horizontal_scale;
             assRegion.isRuby = region.is_ruby;
             assRegion.backColor = region.chars[0].back_color;
             assRegion.text = BuildASSRegionText(caption, region, settings, iniPath);
@@ -922,42 +977,60 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
     if (!settings.fontName.empty())
         fontTag = "{\\fn" + settings.fontName + "}";
 
-    // Build \4c/\4a tags for the BorderStyle=3 background box.
-    // The ASS renderer sizes the box to the actual rendered text, so it always
-    // matches regardless of font.  Replaces the fixed-size Layer 0 drawing rect.
-    auto makeBgTag = [&](uint32_t backColor) -> std::string {
-        if (!settings.showBackground)
-            return "{\\4a&HFF&}";  // fully transparent — hide box
-        uint8_t b = ARIBCC_COLOR_B(backColor);
-        uint8_t g = ARIBCC_COLOR_G(backColor);
-        uint8_t r = ARIBCC_COLOR_R(backColor);
-        uint8_t assAlpha;
-        if (settings.backgroundAlpha >= 0)
-            assAlpha = (uint8_t)min(settings.backgroundAlpha, 255);
-        else {
-            uint8_t a = ARIBCC_COLOR_A(backColor);
-            assAlpha = (a > 0) ? (255 - a) : 255;
-        }
-        char buf[64];
-        snprintf(buf, sizeof(buf), "{\\4c&H%02X%02X%02X&\\4a&H%02X&}", b, g, r, assAlpha);
-        return buf;
-    };
-
     std::vector<ASSEvent> results;
     AribASSRegion group;
     bool hasGroup = false;
-    auto flushGroup = [&]() {
-        if (!hasGroup)
-            return;
 
+    // Emit a Layer 0 background rect whose width is derived from the ACTUAL font
+    // advance (measured via GDI) rather than the ARIB cell width, so the rect
+    // always matches the rendered text regardless of which font is selected.
+    auto emitBackground = [&](const AribASSRegion &r) {
+        if (!settings.showBackground) return;
+        int assFs = (caption.plane_height > 0 && r.charHeight > 0)
+                    ? (int)(r.charHeight * 1080.0 / caption.plane_height) : 0;
+        if (assFs <= 0) return;
+
+        int advance = MeasureFontAdvance(settings.fontName, assFs);
+        double bgWidthASS = r.charCount * (advance + r.fspASS);
+
+        int x1 = ScaleCaptionXToASSArea(caption, r.x);
+        int y1 = ScaleCaptionYToASSArea(caption, r.y);
+        int x2 = x1 + (int)std::round(bgWidthASS);
+        int y2 = ScaleCaptionYToASSArea(caption, r.y + r.charHeight);
+        if (x1 >= x2 || y1 >= y2) return;
+
+        uint8_t b = ARIBCC_COLOR_B(r.backColor);
+        uint8_t g = ARIBCC_COLOR_G(r.backColor);
+        uint8_t rv = ARIBCC_COLOR_R(r.backColor);
+        uint8_t assAlpha;
+        if (settings.backgroundAlpha >= 0)
+        {
+            if (settings.backgroundAlpha >= 255) return;
+            assAlpha = (uint8_t)settings.backgroundAlpha;
+        }
+        else
+        {
+            uint8_t a = ARIBCC_COLOR_A(r.backColor);
+            if (a == 0) return;
+            assAlpha = 255 - a;
+        }
+        char buf[256];
+        snprintf(buf, sizeof(buf),
+            "{\\an7\\pos(0,0)\\p1\\1c&H%02X%02X%02X&\\1a&H%02X&}"
+            "m %d %d l %d %d %d %d %d %d{\\p0}",
+            b, g, rv, assAlpha, x1, y1, x2, y1, x2, y2, x1, y2);
+        results.push_back({0, std::string(buf)});
+    };
+
+    auto flushGroup = [&]() {
+        if (!hasGroup) return;
+        emitBackground(group);
         std::string textPayload = BuildASSPositionTag(caption, group.x, group.y);
         textPayload += fontTag;
         textPayload += captionAlphaTag;
         textPayload += outlineTag;
-        textPayload += makeBgTag(group.backColor);
         textPayload += group.text;
-        results.push_back({0, std::move(textPayload)});
-
+        results.push_back({1, std::move(textPayload)});
         hasGroup = false;
         group = AribASSRegion();
     };
@@ -968,13 +1041,13 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
         if (region.isRuby || region.isVertical)
         {
             flushGroup();
+            if (region.isVertical) emitBackground(region);
             std::string payload = BuildASSPositionTag(caption, region.x, region.y);
             payload += fontTag;
             payload += captionAlphaTag;
             payload += outlineTag;
-            payload += makeBgTag(region.backColor);
             payload += region.text;
-            results.push_back({0, std::move(payload)});
+            results.push_back({1, std::move(payload)});
             continue;
         }
 
@@ -992,10 +1065,11 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
             while (spaces-- > 0)
                 group.text += " ";
             group.text += region.text;
-            group.right = (std::max)(group.right, region.right);
-            group.height = (std::max)(group.height, region.height);
-            group.charHeight = (std::max)(group.charHeight, region.charHeight);
+            group.right     = (std::max)(group.right, region.right);
+            group.height    = (std::max)(group.height, region.height);
+            group.charHeight= (std::max)(group.charHeight, region.charHeight);
             group.cellWidth = (std::max)(group.cellWidth, region.cellWidth);
+            group.charCount += region.charCount;
         }
         else
         {

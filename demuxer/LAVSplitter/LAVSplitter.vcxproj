@@ -61,7 +61,7 @@
       <AdditionalIncludeDirectories>..\Demuxers;$(SolutionDir)libaribcaption\include;$(SolutionDir)libaribcaption\build\$(PlatformName)\Debug\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>advapi32.lib;ole32.lib;winmm.lib;user32.lib;oleaut32.lib;Comctl32.lib;shell32.lib;version.lib;Shlwapi.lib;avformat-lav.lib;avutil-lav.lib;avcodec-lav.lib;aribcaption.lib;Dwrite.lib</AdditionalDependencies>
+      <AdditionalDependencies>advapi32.lib;ole32.lib;winmm.lib;user32.lib;oleaut32.lib;Comctl32.lib;shell32.lib;version.lib;Shlwapi.lib;gdi32.lib;avformat-lav.lib;avutil-lav.lib;avcodec-lav.lib;aribcaption.lib;Dwrite.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(SolutionDir)libaribcaption\build\$(PlatformName)\Debug\Debug;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <ModuleDefinitionFile>LAVSplitter.def</ModuleDefinitionFile>
     </Link>
@@ -75,7 +75,7 @@
       <AdditionalIncludeDirectories>..\Demuxers;$(SolutionDir)libaribcaption\include;$(SolutionDir)libaribcaption\build\$(PlatformName)\Release\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>advapi32.lib;ole32.lib;winmm.lib;user32.lib;oleaut32.lib;Comctl32.lib;shell32.lib;version.lib;Shlwapi.lib;avformat-lav.lib;avutil-lav.lib;avcodec-lav.lib;aribcaption.lib;Dwrite.lib</AdditionalDependencies>
+      <AdditionalDependencies>advapi32.lib;ole32.lib;winmm.lib;user32.lib;oleaut32.lib;Comctl32.lib;shell32.lib;version.lib;Shlwapi.lib;gdi32.lib;avformat-lav.lib;avutil-lav.lib;avcodec-lav.lib;aribcaption.lib;Dwrite.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(SolutionDir)libaribcaption\build\$(PlatformName)\Release\Release;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <ModuleDefinitionFile>LAVSplitter.def</ModuleDefinitionFile>
     </Link>
