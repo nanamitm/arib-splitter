@@ -382,6 +382,8 @@ static std::vector<uint8_t> UnpackDRCSPixels(const uint8_t *raw, int w, int h, i
     return gray;
 }
 
+static double CaptionPlaneToASSScale(const aribcc_caption_t &caption);
+
 // Save an 8-bit palette BMP for a DRCS character.  Skips if file already exists.
 static void TrySaveDRCSBitmap(const char *md5, aribcc_drcs_t *drcs,
                                const WCHAR *iniPath, const std::wstring &saveDirSetting)
@@ -459,6 +461,81 @@ static std::string HandleDRCSChar(const aribcc_caption_t &caption,
         TrySaveDRCSBitmap(md5, drcs, iniPath, settings.drcsSaveDir);
 
     return LookupDRCSMap(iniPath, md5);
+}
+
+static void AppendASSDrawingPoint(std::string &out, int v)
+{
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%d", v);
+    out += buf;
+}
+
+static std::string BuildDRCSDrawingText(const aribcc_caption_t &caption,
+                                        const aribcc_caption_char_t &ch)
+{
+    if (ch.type != ARIBCC_CHARTYPE_DRCS || !caption.drcs_map)
+        return {};
+
+    aribcc_drcs_t *drcs = aribcc_drcsmap_get(caption.drcs_map, ch.drcs_code);
+    if (!drcs)
+        return {};
+
+    int w = 0, h = 0, depth = 0, depth_bits = 0;
+    aribcc_drcs_get_size(drcs, &w, &h);
+    aribcc_drcs_get_depth(drcs, &depth, &depth_bits);
+
+    uint8_t *raw = nullptr;
+    size_t rawSz = 0;
+    aribcc_drcs_get_pixels(drcs, &raw, &rawSz);
+    if (!raw || w <= 0 || h <= 0 || depth_bits <= 0)
+        return {};
+
+    auto gray = UnpackDRCSPixels(raw, w, h, depth_bits);
+    double scale = CaptionPlaneToASSScale(caption);
+    double drawW = ch.char_width * ch.char_horizontal_scale * scale;
+    double drawH = ch.char_height * ch.char_vertical_scale * scale;
+    if (drawW <= 0 || drawH <= 0)
+        return {};
+
+    std::string path;
+    path.reserve((size_t)w * h * 12);
+    for (int y = 0; y < h; ++y)
+    {
+        for (int x = 0; x < w; ++x)
+        {
+            if (gray[y * w + x] >= 250)
+                continue;
+
+            int x1 = (int)std::floor(x * drawW / w);
+            int y1 = (int)std::floor(y * drawH / h);
+            int x2 = (int)std::ceil((x + 1) * drawW / w);
+            int y2 = (int)std::ceil((y + 1) * drawH / h);
+            if (x1 >= x2 || y1 >= y2)
+                continue;
+
+            path += "m ";
+            AppendASSDrawingPoint(path, x1);
+            path += " ";
+            AppendASSDrawingPoint(path, y1);
+            path += " l ";
+            AppendASSDrawingPoint(path, x2);
+            path += " ";
+            AppendASSDrawingPoint(path, y1);
+            path += " ";
+            AppendASSDrawingPoint(path, x2);
+            path += " ";
+            AppendASSDrawingPoint(path, y2);
+            path += " ";
+            AppendASSDrawingPoint(path, x1);
+            path += " ";
+            AppendASSDrawingPoint(path, y2);
+            path += " ";
+        }
+    }
+    if (path.empty())
+        return {};
+
+    return "{\\bord0\\p1}" + path + "{\\p0}";
 }
 
 // ---------------------------------------------------------------------------
@@ -567,7 +644,10 @@ static std::string BuildASSSingleCharText(const aribcc_caption_t &caption,
     if (ch.type == ARIBCC_CHARTYPE_DRCS)
     {
         std::string mapped = HandleDRCSChar(caption, ch, settings, iniPath);
-        if (!mapped.empty()) result += mapped;
+        if (!mapped.empty())
+            result += mapped;
+        else
+            result += BuildDRCSDrawingText(caption, ch);
     }
     else if (ch.u8str[0] != '\0')
         result += ch.u8str;
