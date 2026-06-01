@@ -323,6 +323,31 @@ static bool IsFullwidthBracket(const aribcc_caption_char_t &ch)
     return u[0] == 0xE3 && u[1] == 0x80 && u[2] >= 0x8C && u[2] <= 0x91;
 }
 
+static uint32_t DecodeFirstUTF8Codepoint(const char *s)
+{
+    const auto *u = reinterpret_cast<const unsigned char *>(s);
+    if (!u || !u[0])
+        return 0;
+    if (u[0] < 0x80)
+        return u[0];
+    if ((u[0] & 0xE0) == 0xC0 && (u[1] & 0xC0) == 0x80)
+        return ((uint32_t)(u[0] & 0x1F) << 6) | (uint32_t)(u[1] & 0x3F);
+    if ((u[0] & 0xF0) == 0xE0 && (u[1] & 0xC0) == 0x80 && (u[2] & 0xC0) == 0x80)
+        return ((uint32_t)(u[0] & 0x0F) << 12) | ((uint32_t)(u[1] & 0x3F) << 6) |
+               (uint32_t)(u[2] & 0x3F);
+    if ((u[0] & 0xF8) == 0xF0 && (u[1] & 0xC0) == 0x80 && (u[2] & 0xC0) == 0x80 &&
+        (u[3] & 0xC0) == 0x80)
+        return ((uint32_t)(u[0] & 0x07) << 18) | ((uint32_t)(u[1] & 0x3F) << 12) |
+               ((uint32_t)(u[2] & 0x3F) << 6) | (uint32_t)(u[3] & 0x3F);
+    return 0;
+}
+
+static bool IsUnicodeHalfwidthGlyph(const aribcc_caption_char_t &ch)
+{
+    uint32_t cp = DecodeFirstUTF8Codepoint(ch.u8str);
+    return cp < 0x80 || (cp >= 0xFF61 && cp <= 0xFF9F);
+}
+
 // Returns the effective horizontal scale for a character.
 // ARIB broadcasts send full-width brackets as MSZ (char_horizontal_scale=0.5).
 // When aribBracketSquish is disabled, override to full-width (1.0) so that
@@ -666,6 +691,16 @@ static std::string BuildASSSingleCharText(const aribcc_caption_t &caption,
     int assFs   = (caption.plane_height > 0 && scaledH > 0)
                   ? (int)(scaledH * 1080.0 / caption.plane_height) : 0;
     if (assFs > 0) { char b[32]; snprintf(b, sizeof(b), "{\\fs%d}", assFs); result += b; }
+    float effectiveHScale = EffectiveHScale(ch, settings);
+    bool needsGlyphSquish = ch.type != ARIBCC_CHARTYPE_DRCS &&
+                            effectiveHScale < 0.99f &&
+                            !IsUnicodeHalfwidthGlyph(ch);
+    if (needsGlyphSquish)
+    {
+        char b[32];
+        snprintf(b, sizeof(b), "{\\fscx%d}", (int)std::lround(effectiveHScale * 100.0f));
+        result += b;
+    }
     {
         char b[64];
         snprintf(b, sizeof(b), "{\\c&H%02X%02X%02X&}",
