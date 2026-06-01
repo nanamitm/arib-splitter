@@ -33,7 +33,6 @@
 #include <algorithm>
 #include <climits>
 #include <cmath>
-#include <unordered_map>
 
 extern "C"
 {
@@ -241,12 +240,6 @@ struct AribCaptionSettings
     int          outlineWidth    = 0;    // ASS \bord value (0=no outline)
     std::string  fontName;               // empty = use style default (MS Gothic)
     int          delayMs         = 0;    // timing offset in ms (can be negative)
-    bool         drcsSaveBmp     = false;
-    std::wstring drcsSaveDir;            // empty = save next to DLL in .\DRCS
-    // When true, full-width brackets transmitted as MSZ are rendered at half
-    // width to match ARIB font metrics. When false, they are treated as full
-    // width to avoid overlap with general fonts.
-    bool         aribBracketSquish = true;
 };
 
 // Fill iniPath with the path of the DLL with extension replaced by ".ini".
@@ -292,12 +285,6 @@ static void ReadIniSection(AribCaptionSettings &s, const WCHAR *iniPath, const W
     }
     if (present(L"DelayMs"))
         s.delayMs = max(-30000, min(30000, _wtoi(buf)));
-    if (present(L"DRCSSaveBmp"))
-        s.drcsSaveBmp = _wtoi(buf) != 0;
-    if (present(L"DRCSSaveDir"))
-        s.drcsSaveDir = buf;
-    if (present(L"AribBracketSquish"))
-        s.aribBracketSquish = _wtoi(buf) != 0;
 }
 
 // Load settings for caption (isSuperimpose=false) or superimpose (true).
@@ -312,15 +299,6 @@ static AribCaptionSettings GetAribCaptionSettings(bool isSuperimpose = false)
     if (isSuperimpose)
         ReadIniSection(s, iniPath, L"Superimpose");
     return s;
-}
-
-// Returns true for full-width corner/black brackets (U+300C-U+300F,
-// U+3010-U+3011) which ARIB broadcasts transmit as MSZ (half-width).
-static bool IsFullwidthBracket(const aribcc_caption_char_t &ch)
-{
-    const auto *u = reinterpret_cast<const unsigned char *>(ch.u8str);
-    // All six code points share UTF-8 prefix E3 80 and third byte in [8C, 91]
-    return u[0] == 0xE3 && u[1] == 0x80 && u[2] >= 0x8C && u[2] <= 0x91;
 }
 
 static uint32_t DecodeFirstUTF8Codepoint(const char *s)
@@ -348,83 +326,9 @@ static bool IsUnicodeHalfwidthGlyph(const aribcc_caption_char_t &ch)
     return cp < 0x80 || (cp >= 0xFF61 && cp <= 0xFF9F);
 }
 
-// Returns the effective horizontal scale for a character.
-// ARIB broadcasts send full-width brackets as MSZ (char_horizontal_scale=0.5).
-// When aribBracketSquish is disabled, override to full-width (1.0) so that
-// general fonts do not overlap adjacent characters.
-// When aribBracketSquish is enabled (default), keep the original 0.5 to match
-// ARIB font metrics where bracket glyphs are designed for a half-width cell.
-static float EffectiveHScale(const aribcc_caption_char_t &ch,
-                              const AribCaptionSettings &settings)
-{
-    if (!settings.aribBracketSquish && IsFullwidthBracket(ch))
-        return 1.0f;
-    return ch.char_horizontal_scale;
-}
-
-static int AribSectionWidth(const aribcc_caption_char_t &ch,
-                             const AribCaptionSettings &settings)
-{
-    return (int)std::floor((ch.char_width + ch.char_horizontal_spacing) * EffectiveHScale(ch, settings));
-}
-
 // ---------------------------------------------------------------------------
 // DRCS utilities
 // ---------------------------------------------------------------------------
-
-// Return the resolved absolute path for the DRCS save directory.
-// |saveDir| is from INI (may be relative).  If empty, uses ".\DRCS" next to DLL.
-static std::wstring ResolveDRCSSaveDir(const WCHAR *iniPath, const std::wstring &saveDir)
-{
-    WCHAR base[MAX_PATH];
-    wcscpy_s(base, iniPath);
-    PathRemoveFileSpecW(base);
-
-    WCHAR combined[MAX_PATH];
-    const WCHAR *rel = saveDir.empty() ? L".\\DRCS" : saveDir.c_str();
-    PathCombineW(combined, base, rel);
-    return combined;
-}
-
-// MD5-keyed mapping table, refreshed every 5 s to pick up user edits.
-static const std::string& LookupDRCSMap(const WCHAR *iniPath, const char *md5Raw)
-{
-    static std::unordered_map<std::string, std::string> cache;
-    static DWORD lastLoad = 0;
-    static WCHAR lastPath[MAX_PATH] = {};
-
-    DWORD now = GetTickCount();
-    if (now - lastLoad > 5000 || wcscmp(lastPath, iniPath) != 0)
-    {
-        cache.clear();
-        std::vector<WCHAR> buf(32768);
-        DWORD len = GetPrivateProfileSectionW(L"DRCSMap", buf.data(), (DWORD)buf.size(), iniPath);
-        for (WCHAR *p = buf.data(); *p && p < buf.data() + len; p += wcslen(p) + 1)
-        {
-            WCHAR *eq = wcschr(p, L'=');
-            if (!eq) continue;
-            // Key: MD5 (ASCII), normalised to upper-case
-            std::string key;
-            for (WCHAR *k = p; k < eq; ++k)
-                key += (char)toupper((unsigned char)*k);
-            // Value: Unicode text → UTF-8
-            int vlen = WideCharToMultiByte(CP_UTF8, 0, eq + 1, -1, nullptr, 0, nullptr, nullptr);
-            std::string val;
-            if (vlen > 1) { val.resize(vlen - 1); WideCharToMultiByte(CP_UTF8, 0, eq + 1, -1, &val[0], vlen, nullptr, nullptr); }
-            if (!key.empty() && !val.empty()) cache[key] = val;
-        }
-        lastLoad = now;
-        wcscpy_s(lastPath, iniPath);
-    }
-
-    // Normalise md5 to upper-case for lookup
-    std::string md5;
-    for (const char *c = md5Raw; *c; ++c) md5 += (char)toupper((unsigned char)*c);
-
-    static const std::string empty;
-    auto it = cache.find(md5);
-    return it != cache.end() ? it->second : empty;
-}
 
 // Unpack ARIB DRCS bit-packed pixels to 8-bit grayscale (0=black, 255=white).
 static std::vector<uint8_t> UnpackDRCSPixels(const uint8_t *raw, int w, int h, int depth_bits)
@@ -443,85 +347,6 @@ static std::vector<uint8_t> UnpackDRCSPixels(const uint8_t *raw, int w, int h, i
 }
 
 static double CaptionPlaneToASSScale(const aribcc_caption_t &caption);
-
-// Save an 8-bit palette BMP for a DRCS character.  Skips if file already exists.
-static void TrySaveDRCSBitmap(const char *md5, aribcc_drcs_t *drcs,
-                               const WCHAR *iniPath, const std::wstring &saveDirSetting)
-{
-    std::wstring dir = ResolveDRCSSaveDir(iniPath, saveDirSetting);
-    CreateDirectoryW(dir.c_str(), nullptr);
-
-    // File: {dir}\{MD5}.bmp  (skip if already exists)
-    std::wstring md5W(md5, md5 + strlen(md5));
-    for (auto &c : md5W) c = towupper(c);
-    std::wstring path = dir + L"\\" + md5W + L".bmp";
-    if (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES)
-        return;
-
-    int w = 0, h = 0, depth = 0, depth_bits = 0;
-    aribcc_drcs_get_size(drcs, &w, &h);
-    aribcc_drcs_get_depth(drcs, &depth, &depth_bits);
-    uint8_t *raw = nullptr; size_t rawSz = 0;
-    aribcc_drcs_get_pixels(drcs, &raw, &rawSz);
-    if (!raw || w <= 0 || h <= 0 || depth_bits <= 0) return;
-
-    auto gray = UnpackDRCSPixels(raw, w, h, depth_bits);
-
-    int stride = (w + 3) & ~3;
-    DWORD paletteBytes = 256 * sizeof(RGBQUAD);
-    DWORD pixBytes     = (DWORD)(stride * h);
-
-    BITMAPFILEHEADER bfh = {};
-    bfh.bfType    = 0x4D42;
-    bfh.bfOffBits = sizeof(bfh) + sizeof(BITMAPINFOHEADER) + paletteBytes;
-    bfh.bfSize    = bfh.bfOffBits + pixBytes;
-
-    BITMAPINFOHEADER bih = {};
-    bih.biSize        = sizeof(bih);
-    bih.biWidth       = w;
-    bih.biHeight      = -h;   // top-down
-    bih.biPlanes      = 1;
-    bih.biBitCount    = 8;
-    bih.biCompression = BI_RGB;
-    bih.biClrUsed     = 256;
-
-    HANDLE hf = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
-                             CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (hf == INVALID_HANDLE_VALUE) return;
-
-    DWORD wr;
-    WriteFile(hf, &bfh, sizeof(bfh), &wr, nullptr);
-    WriteFile(hf, &bih, sizeof(bih), &wr, nullptr);
-    for (int i = 0; i < 256; ++i) {
-        RGBQUAD q = { (BYTE)i, (BYTE)i, (BYTE)i, 0 };
-        WriteFile(hf, &q, sizeof(q), &wr, nullptr);
-    }
-    std::vector<uint8_t> row(stride, 255);
-    for (int y = 0; y < h; ++y) {
-        for (int x = 0; x < w; ++x) row[x] = gray[y * w + x];
-        WriteFile(hf, row.data(), stride, &wr, nullptr);
-    }
-    CloseHandle(hf);
-}
-
-// Resolve one unmapped DRCS character: save BMP if requested, then look up map.
-// Returns the substitution UTF-8 string, or empty if not mapped.
-static std::string HandleDRCSChar(const aribcc_caption_t &caption,
-                                   const aribcc_caption_char_t &ch,
-                                   const AribCaptionSettings &settings,
-                                   const WCHAR *iniPath)
-{
-    if (ch.type != ARIBCC_CHARTYPE_DRCS || !caption.drcs_map) return {};
-    aribcc_drcs_t *drcs = aribcc_drcsmap_get(caption.drcs_map, ch.drcs_code);
-    if (!drcs) return {};
-    const char *md5 = aribcc_drcs_get_md5(drcs);
-    if (!md5 || !*md5) return {};
-
-    if (settings.drcsSaveBmp)
-        TrySaveDRCSBitmap(md5, drcs, iniPath, settings.drcsSaveDir);
-
-    return LookupDRCSMap(iniPath, md5);
-}
 
 static void AppendASSDrawingPoint(std::string &out, int v)
 {
@@ -669,10 +494,9 @@ static bool IsVerticalRegion(const aribcc_caption_region_t &region)
     return std::abs(dy) > std::abs(dx);
 }
 
-static double AribTextOffsetX(const aribcc_caption_char_t &ch,
-                              const AribCaptionSettings &settings)
+static double AribTextOffsetX(const aribcc_caption_char_t &ch)
 {
-    return ch.char_horizontal_spacing * EffectiveHScale(ch, settings) / 2.0;
+    return ch.char_horizontal_spacing * ch.char_horizontal_scale / 2.0;
 }
 
 static double AribTextOffsetY(const aribcc_caption_char_t &ch)
@@ -682,16 +506,14 @@ static double AribTextOffsetY(const aribcc_caption_char_t &ch)
 
 // Build style + text payload for a single ARIB character (no \fsp).
 static std::string BuildASSSingleCharText(const aribcc_caption_t &caption,
-                                          const aribcc_caption_char_t &ch,
-                                          const AribCaptionSettings &settings,
-                                          const WCHAR *iniPath)
+                                          const aribcc_caption_char_t &ch)
 {
     std::string result;
     int scaledH = (int)std::floor(ch.char_height * ch.char_vertical_scale);
     int assFs   = (caption.plane_height > 0 && scaledH > 0)
                   ? (int)(scaledH * 1080.0 / caption.plane_height) : 0;
     if (assFs > 0) { char b[32]; snprintf(b, sizeof(b), "{\\fs%d}", assFs); result += b; }
-    float effectiveHScale = EffectiveHScale(ch, settings);
+    float effectiveHScale = ch.char_horizontal_scale;
     bool needsGlyphSquish = ch.type != ARIBCC_CHARTYPE_DRCS &&
                             effectiveHScale < 0.99f &&
                             !IsUnicodeHalfwidthGlyph(ch);
@@ -713,13 +535,7 @@ static std::string BuildASSSingleCharText(const aribcc_caption_t &caption,
     if (ch.style & ARIBCC_CHARSTYLE_ITALIC)    result += "{\\i1}";
     if (ch.style & ARIBCC_CHARSTYLE_UNDERLINE) result += "{\\u1}";
     if (ch.type == ARIBCC_CHARTYPE_DRCS)
-    {
-        std::string mapped = HandleDRCSChar(caption, ch, settings, iniPath);
-        if (!mapped.empty())
-            result += mapped;
-        else
-            result += BuildDRCSDrawingText(caption, ch);
-    }
+        result += BuildDRCSDrawingText(caption, ch);
     else if (ch.u8str[0] != '\0')
         result += ch.u8str;
     return result;
@@ -738,9 +554,6 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
                                                   const AribCaptionSettings &settings)
 {
     // Build an ASS Dialogue line body from libaribcaption output.
-    WCHAR iniPath[MAX_PATH] = {};
-    GetAribIniPath(iniPath, MAX_PATH);
-
     std::vector<AribASSRegion> regions;
     for (uint32_t ri = 0; ri < caption.region_count; ri++)
     {
@@ -776,13 +589,13 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
                     AribASSRegion vr;
                     vr.x          = ch.x;
                     vr.y          = ch.y;
-                    vr.textX      = ch.x + AribTextOffsetX(ch, settings);
+                    vr.textX      = ch.x + AribTextOffsetX(ch);
                     vr.textY      = ch.y + AribTextOffsetY(ch);
-                    vr.right      = ch.x + AribSectionWidth(ch, settings);
+                    vr.right      = ch.x + AribSectionWidth(ch);
                     vr.charHeight = (int)std::floor(ch.char_height * ch.char_vertical_scale);
                     vr.isVertical = true;
                     vr.backColor  = ch.back_color;
-                    vr.text       = BuildASSSingleCharText(caption, ch, settings, iniPath);
+                    vr.text       = BuildASSSingleCharText(caption, ch);
                     if (!vr.text.empty())
                         regions.push_back(vr);
                 }
@@ -798,13 +611,13 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
                 AribASSRegion cr;
                 cr.x          = ch.x;
                 cr.y          = ch.y;
-                cr.textX      = ch.x + AribTextOffsetX(ch, settings);
+                cr.textX      = ch.x + AribTextOffsetX(ch);
                 cr.textY      = ch.y + AribTextOffsetY(ch);
-                cr.right      = ch.x + AribSectionWidth(ch, settings);
+                cr.right      = ch.x + AribSectionWidth(ch);
                 cr.charHeight = (int)std::floor(ch.char_height * ch.char_vertical_scale);
                 cr.isRuby     = region.is_ruby;
                 cr.backColor  = ch.back_color;
-                cr.text       = BuildASSSingleCharText(caption, ch, settings, iniPath);
+                cr.text       = BuildASSSingleCharText(caption, ch);
                 if (!cr.text.empty())
                     regions.push_back(cr);
             }
@@ -817,13 +630,13 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
                 AribASSRegion cr;
                 cr.x          = ch.x;
                 cr.y          = ch.y;
-                cr.textX      = ch.x + AribTextOffsetX(ch, settings);
+                cr.textX      = ch.x + AribTextOffsetX(ch);
                 cr.textY      = ch.y + AribTextOffsetY(ch);
-                cr.right      = ch.x + AribSectionWidth(ch, settings);
+                cr.right      = ch.x + AribSectionWidth(ch);
                 cr.charHeight = (int)std::floor(ch.char_height * ch.char_vertical_scale);
                 cr.isRuby     = region.is_ruby;
                 cr.backColor  = ch.back_color;
-                cr.text       = BuildASSSingleCharText(caption, ch, settings, iniPath);
+                cr.text       = BuildASSSingleCharText(caption, ch);
                 if (!cr.text.empty())
                     regions.push_back(cr);
             }
@@ -847,7 +660,7 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
     if (settings.outlineWidth > 0)
         snprintf(outlineTag, sizeof(outlineTag), "{\\bord%d}", settings.outlineWidth);
 
-    // \fn tag — applied once per event; empty if no custom font.
+    // \fn tag - applied once per event; empty if no custom font.
     std::string fontTag;
     if (!settings.fontName.empty())
         fontTag = "{\\fn" + settings.fontName + "}";
