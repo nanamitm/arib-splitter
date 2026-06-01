@@ -324,14 +324,16 @@ static bool IsFullwidthBracket(const aribcc_caption_char_t &ch)
 }
 
 // Returns the effective horizontal scale for a character.
-// When aribBracketSquish is disabled and the decoder has already restored
-// full-width scale for brackets, override back to half-width (0.5) so that
-// cell advance matches ARIB font metrics.
+// ARIB broadcasts send full-width brackets as MSZ (char_horizontal_scale=0.5).
+// When aribBracketSquish is disabled, override to full-width (1.0) so that
+// general fonts do not overlap adjacent characters.
+// When aribBracketSquish is enabled (default), keep the original 0.5 to match
+// ARIB font metrics where bracket glyphs are designed for a half-width cell.
 static float EffectiveHScale(const aribcc_caption_char_t &ch,
                               const AribCaptionSettings &settings)
 {
-    if (settings.aribBracketSquish && IsFullwidthBracket(ch))
-        return 0.5f;
+    if (!settings.aribBracketSquish && IsFullwidthBracket(ch))
+        return 1.0f;
     return ch.char_horizontal_scale;
 }
 
