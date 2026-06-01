@@ -243,6 +243,10 @@ struct AribCaptionSettings
     int          delayMs         = 0;    // timing offset in ms (can be negative)
     bool         drcsSaveBmp     = false;
     std::wstring drcsSaveDir;            // empty = save next to DLL in .\DRCS
+    // When true, full-width brackets transmitted as MSZ are rendered at half
+    // width to match ARIB font metrics. When false, they are treated as full
+    // width to avoid overlap with general fonts.
+    bool         aribBracketSquish = true;
 };
 
 // Fill iniPath with the path of the DLL with extension replaced by ".ini".
@@ -292,6 +296,8 @@ static void ReadIniSection(AribCaptionSettings &s, const WCHAR *iniPath, const W
         s.drcsSaveBmp = _wtoi(buf) != 0;
     if (present(L"DRCSSaveDir"))
         s.drcsSaveDir = buf;
+    if (present(L"AribBracketSquish"))
+        s.aribBracketSquish = _wtoi(buf) != 0;
 }
 
 // Load settings for caption (isSuperimpose=false) or superimpose (true).
@@ -306,6 +312,33 @@ static AribCaptionSettings GetAribCaptionSettings(bool isSuperimpose = false)
     if (isSuperimpose)
         ReadIniSection(s, iniPath, L"Superimpose");
     return s;
+}
+
+// Returns true for full-width corner/black brackets (U+300C-U+300F,
+// U+3010-U+3011) which ARIB broadcasts transmit as MSZ (half-width).
+static bool IsFullwidthBracket(const aribcc_caption_char_t &ch)
+{
+    const auto *u = reinterpret_cast<const unsigned char *>(ch.u8str);
+    // All six code points share UTF-8 prefix E3 80 and third byte in [8C, 91]
+    return u[0] == 0xE3 && u[1] == 0x80 && u[2] >= 0x8C && u[2] <= 0x91;
+}
+
+// Returns the effective horizontal scale for a character.
+// When aribBracketSquish is disabled and the decoder has already restored
+// full-width scale for brackets, override back to half-width (0.5) so that
+// cell advance matches ARIB font metrics.
+static float EffectiveHScale(const aribcc_caption_char_t &ch,
+                              const AribCaptionSettings &settings)
+{
+    if (settings.aribBracketSquish && IsFullwidthBracket(ch))
+        return 0.5f;
+    return ch.char_horizontal_scale;
+}
+
+static int AribSectionWidth(const aribcc_caption_char_t &ch,
+                             const AribCaptionSettings &settings)
+{
+    return (int)std::floor((ch.char_width + ch.char_horizontal_spacing) * EffectiveHScale(ch, settings));
 }
 
 // ---------------------------------------------------------------------------
@@ -609,9 +642,10 @@ static bool IsVerticalRegion(const aribcc_caption_region_t &region)
     return std::abs(dy) > std::abs(dx);
 }
 
-static double AribTextOffsetX(const aribcc_caption_char_t &ch)
+static double AribTextOffsetX(const aribcc_caption_char_t &ch,
+                              const AribCaptionSettings &settings)
 {
-    return ch.char_horizontal_spacing * ch.char_horizontal_scale / 2.0;
+    return ch.char_horizontal_spacing * EffectiveHScale(ch, settings) / 2.0;
 }
 
 static double AribTextOffsetY(const aribcc_caption_char_t &ch)
@@ -705,9 +739,9 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
                     AribASSRegion vr;
                     vr.x          = ch.x;
                     vr.y          = ch.y;
-                    vr.textX      = ch.x + AribTextOffsetX(ch);
+                    vr.textX      = ch.x + AribTextOffsetX(ch, settings);
                     vr.textY      = ch.y + AribTextOffsetY(ch);
-                    vr.right      = ch.x + AribSectionWidth(ch);
+                    vr.right      = ch.x + AribSectionWidth(ch, settings);
                     vr.charHeight = (int)std::floor(ch.char_height * ch.char_vertical_scale);
                     vr.isVertical = true;
                     vr.backColor  = ch.back_color;
@@ -727,9 +761,9 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
                 AribASSRegion cr;
                 cr.x          = ch.x;
                 cr.y          = ch.y;
-                cr.textX      = ch.x + AribTextOffsetX(ch);
+                cr.textX      = ch.x + AribTextOffsetX(ch, settings);
                 cr.textY      = ch.y + AribTextOffsetY(ch);
-                cr.right      = ch.x + AribSectionWidth(ch);
+                cr.right      = ch.x + AribSectionWidth(ch, settings);
                 cr.charHeight = (int)std::floor(ch.char_height * ch.char_vertical_scale);
                 cr.isRuby     = region.is_ruby;
                 cr.backColor  = ch.back_color;
@@ -746,9 +780,9 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
                 AribASSRegion cr;
                 cr.x          = ch.x;
                 cr.y          = ch.y;
-                cr.textX      = ch.x + AribTextOffsetX(ch);
+                cr.textX      = ch.x + AribTextOffsetX(ch, settings);
                 cr.textY      = ch.y + AribTextOffsetY(ch);
-                cr.right      = ch.x + AribSectionWidth(ch);
+                cr.right      = ch.x + AribSectionWidth(ch, settings);
                 cr.charHeight = (int)std::floor(ch.char_height * ch.char_vertical_scale);
                 cr.isRuby     = region.is_ruby;
                 cr.backColor  = ch.back_color;
