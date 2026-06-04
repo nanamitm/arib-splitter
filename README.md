@@ -140,6 +140,7 @@ A sample with all available keys is provided in `settings/ARIBSplitter.ini`.
 | `CaptionTransparency` | 0 | Text transparency 0 (opaque) – 100 (invisible) |
 | `BackgroundTransparency` | *(stream value)* | Background transparency 0–100; omit the key entirely to use the alpha value embedded in the broadcast stream |
 | `ShowBackground` | 1 | `0` to hide the caption background |
+| `ShowRubyBackground` | 1 | `0` to hide the background behind ruby (furigana) text |
 | `OutlineWidth` | 0 | Text outline thickness (ASS `\bord` value, 0 = none) |
 | `DelayMs` | 0 | Caption timing offset in milliseconds; negative values advance display |
 

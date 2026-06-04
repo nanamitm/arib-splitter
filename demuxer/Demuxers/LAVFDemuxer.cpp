@@ -234,12 +234,13 @@ static int AribSectionHeight(const aribcc_caption_char_t &ch)
 
 struct AribCaptionSettings
 {
-    int          captionAlpha    = 0;    // ASS \1a: 0=opaque, 255=fully transparent
-    int          backgroundAlpha = -1;   // -1=use ARIB data, 0-255=fixed override
-    bool         showBackground  = true;
-    int          outlineWidth    = 0;    // ASS \bord value (0=no outline)
-    std::string  fontName;               // empty = use style default (MS Gothic)
-    int          delayMs         = 0;    // timing offset in ms (can be negative)
+    int          captionAlpha      = 0;    // ASS \1a: 0=opaque, 255=fully transparent
+    int          backgroundAlpha   = -1;   // -1=use ARIB data, 0-255=fixed override
+    bool         showBackground    = true;
+    bool         showRubyBackground = true;  // whether to draw background behind ruby text
+    int          outlineWidth      = 0;    // ASS \bord value (0=no outline)
+    std::string  fontName;                 // empty = use style default (MS Gothic)
+    int          delayMs           = 0;    // timing offset in ms (can be negative)
 };
 
 // Fill iniPath with the path of the DLL with extension replaced by ".ini".
@@ -276,6 +277,8 @@ static void ReadIniSection(AribCaptionSettings &s, const WCHAR *iniPath, const W
     }
     if (present(L"ShowBackground"))
         s.showBackground = _wtoi(buf) != 0;
+    if (present(L"ShowRubyBackground"))
+        s.showRubyBackground = _wtoi(buf) != 0;
     if (present(L"OutlineWidth"))
         s.outlineWidth = max(0, min(10, _wtoi(buf)));
     if (present(L"FontName"))
@@ -666,8 +669,7 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
         fontTag = "{\\fn" + settings.fontName + "}";
 
     std::vector<ASSEvent> results;
-    // Emit a Layer 0 background rect using the ARIB cell width. Ruby remains
-    // background-free so it does not create a second band above the base text.
+    // Emit a Layer 0 background rect using the ARIB cell width.
     auto emitBackgroundRect = [&](int x, double textY, int right, int charHeight, uint32_t backColor) {
         if (!settings.showBackground) return;
         int assFs = (caption.plane_height > 0 && charHeight > 0)
@@ -744,6 +746,45 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
             backgroundRun.right = region.right;
     }
     flushBackgroundRun();
+
+    // Ruby background pass — only when ShowRubyBackground=1.
+    if (settings.showRubyBackground)
+    {
+        bool hasRubyRun = false;
+        AribASSRegion rubyRun;
+        auto flushRubyRun = [&]() {
+            if (!hasRubyRun) return;
+            emitBackgroundRect(rubyRun.x, rubyRun.textY, rubyRun.right,
+                               rubyRun.charHeight, rubyRun.backColor);
+            hasRubyRun = false;
+        };
+
+        for (const auto &region : regions)
+        {
+            if (!region.isRuby)
+                continue;
+
+            const bool sameRun =
+                hasRubyRun &&
+                rubyRun.y == region.y &&
+                std::abs(rubyRun.textY - region.textY) < 0.5 &&
+                rubyRun.charHeight == region.charHeight &&
+                rubyRun.backColor == region.backColor &&
+                region.x <= rubyRun.right;
+
+            if (!sameRun)
+            {
+                flushRubyRun();
+                rubyRun = region;
+                hasRubyRun = true;
+                continue;
+            }
+
+            if (region.right > rubyRun.right)
+                rubyRun.right = region.right;
+        }
+        flushRubyRun();
+    }
 
     for (const auto &region : regions)
     {
