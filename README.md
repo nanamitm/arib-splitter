@@ -141,6 +141,7 @@ A sample with all available keys is provided in `settings/ARIBSplitter.ini`.
 | `BackgroundTransparency` | *(stream value)* | Background transparency 0–100; omit the key entirely to use the alpha value embedded in the broadcast stream |
 | `ShowBackground` | 1 | `0` to hide the caption background |
 | `ShowRubyBackground` | 1 | `0` to hide the background behind ruby (furigana) text |
+| `BackgroundPadding` | 1 | `1` extends the background to the full ARIB cell height (equal top/bottom padding from row spacing); `0` covers the glyph only |
 | `OutlineWidth` | 0 | Text outline thickness (ASS `\bord` value, 0 = none) |
 | `DelayMs` | 0 | Caption timing offset in milliseconds; negative values advance display |
 

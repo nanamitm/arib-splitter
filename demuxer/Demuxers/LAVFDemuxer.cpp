@@ -234,13 +234,14 @@ static int AribSectionHeight(const aribcc_caption_char_t &ch)
 
 struct AribCaptionSettings
 {
-    int          captionAlpha      = 0;    // ASS \1a: 0=opaque, 255=fully transparent
-    int          backgroundAlpha   = -1;   // -1=use ARIB data, 0-255=fixed override
-    bool         showBackground    = true;
-    bool         showRubyBackground = true;  // whether to draw background behind ruby text
-    int          outlineWidth      = 0;    // ASS \bord value (0=no outline)
-    std::string  fontName;                 // empty = use style default (MS Gothic)
-    int          delayMs           = 0;    // timing offset in ms (can be negative)
+    int          captionAlpha       = 0;    // ASS \1a: 0=opaque, 255=fully transparent
+    int          backgroundAlpha    = -1;   // -1=use ARIB data, 0-255=fixed override
+    bool         showBackground     = true;
+    bool         showRubyBackground = true; // whether to draw background behind ruby text
+    bool         backgroundPadding  = true; // extend background to full ARIB cell (equal top/bottom padding)
+    int          outlineWidth       = 0;    // ASS \bord value (0=no outline)
+    std::string  fontName;                  // empty = use style default (MS Gothic)
+    int          delayMs            = 0;    // timing offset in ms (can be negative)
 };
 
 // Fill iniPath with the path of the DLL with extension replaced by ".ini".
@@ -279,6 +280,8 @@ static void ReadIniSection(AribCaptionSettings &s, const WCHAR *iniPath, const W
         s.showBackground = _wtoi(buf) != 0;
     if (present(L"ShowRubyBackground"))
         s.showRubyBackground = _wtoi(buf) != 0;
+    if (present(L"BackgroundPadding"))
+        s.backgroundPadding = _wtoi(buf) != 0;
     if (present(L"OutlineWidth"))
         s.outlineWidth = max(0, min(10, _wtoi(buf)));
     if (present(L"FontName"))
@@ -482,6 +485,7 @@ struct AribASSRegion
     double textY = 0.0;
     int right = 0;
     int charHeight = 0;   // glyph height only (excludes vertical spacing)
+    int cellHeight = 0;   // full ARIB cell height (char_height + vertical_spacing)
     bool isRuby     = false;
     bool isVertical = false;
     uint32_t backColor = 0;
@@ -596,6 +600,7 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
                     vr.textY      = ch.y + AribTextOffsetY(ch);
                     vr.right      = ch.x + AribSectionWidth(ch);
                     vr.charHeight = (int)std::floor(ch.char_height * ch.char_vertical_scale);
+                    vr.cellHeight = AribSectionHeight(ch);
                     vr.isVertical = true;
                     vr.backColor  = ch.back_color;
                     vr.text       = BuildASSSingleCharText(caption, ch);
@@ -618,6 +623,7 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
                 cr.textY      = ch.y + AribTextOffsetY(ch);
                 cr.right      = ch.x + AribSectionWidth(ch);
                 cr.charHeight = (int)std::floor(ch.char_height * ch.char_vertical_scale);
+                cr.cellHeight = AribSectionHeight(ch);
                 cr.isRuby     = region.is_ruby;
                 cr.backColor  = ch.back_color;
                 cr.text       = BuildASSSingleCharText(caption, ch);
@@ -637,6 +643,7 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
                 cr.textY      = ch.y + AribTextOffsetY(ch);
                 cr.right      = ch.x + AribSectionWidth(ch);
                 cr.charHeight = (int)std::floor(ch.char_height * ch.char_vertical_scale);
+                cr.cellHeight = AribSectionHeight(ch);
                 cr.isRuby     = region.is_ruby;
                 cr.backColor  = ch.back_color;
                 cr.text       = BuildASSSingleCharText(caption, ch);
@@ -670,16 +677,21 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
 
     std::vector<ASSEvent> results;
     // Emit a Layer 0 background rect using the ARIB cell width.
-    auto emitBackgroundRect = [&](int x, double textY, int right, int charHeight, uint32_t backColor) {
+    // When backgroundPadding is true the rect spans the full ARIB cell (y .. y+cellHeight),
+    // giving equal top/bottom padding from the row spacing; otherwise it covers the glyph only.
+    auto emitBackgroundRect = [&](const AribASSRegion &r) {
         if (!settings.showBackground) return;
-        int assFs = (caption.plane_height > 0 && charHeight > 0)
-                    ? (int)(charHeight * 1080.0 / caption.plane_height) : 0;
+        double top    = settings.backgroundPadding ? (double)r.y : r.textY;
+        int    height = settings.backgroundPadding ? r.cellHeight : r.charHeight;
+        int assFs = (caption.plane_height > 0 && height > 0)
+                    ? (int)(height * 1080.0 / caption.plane_height) : 0;
         if (assFs <= 0) return;
 
-        int x1 = ScaleCaptionXToASSArea(caption, x);
-        int y1 = ScaleCaptionYToASSArea(caption, textY);
-        int x2 = ScaleCaptionXToASSArea(caption, right);
-        int y2 = ScaleCaptionYToASSArea(caption, textY + charHeight);
+        int x1 = ScaleCaptionXToASSArea(caption, r.x);
+        int y1 = ScaleCaptionYToASSArea(caption, top);
+        int x2 = ScaleCaptionXToASSArea(caption, r.right);
+        int y2 = ScaleCaptionYToASSArea(caption, top + height);
+        uint32_t backColor = r.backColor;
         if (x1 >= x2 || y1 >= y2) return;
 
         uint8_t b = ARIBCC_COLOR_B(backColor);
@@ -709,8 +721,7 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
     AribASSRegion backgroundRun;
     auto flushBackgroundRun = [&]() {
         if (!hasBackgroundRun) return;
-        emitBackgroundRect(backgroundRun.x, backgroundRun.textY, backgroundRun.right,
-                           backgroundRun.charHeight, backgroundRun.backColor);
+        emitBackgroundRect(backgroundRun);
         hasBackgroundRun = false;
     };
 
@@ -722,7 +733,7 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
         if (region.isVertical)
         {
             flushBackgroundRun();
-            emitBackgroundRect(region.x, region.textY, region.right, region.charHeight, region.backColor);
+            emitBackgroundRect(region);
             continue;
         }
 
@@ -754,8 +765,7 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
         AribASSRegion rubyRun;
         auto flushRubyRun = [&]() {
             if (!hasRubyRun) return;
-            emitBackgroundRect(rubyRun.x, rubyRun.textY, rubyRun.right,
-                               rubyRun.charHeight, rubyRun.backColor);
+            emitBackgroundRect(rubyRun);
             hasRubyRun = false;
         };
 
