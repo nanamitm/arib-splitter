@@ -222,6 +222,12 @@ aribcc_decoder_t *CLAVFDemuxer::GetOrCreateAribDecoder(int streamIndex, bool sup
     return dec;
 }
 
+bool CLAVFDemuxer::IsLateAribSubtitleActive(int streamIndex) const
+{
+    return m_dActiveStreams[subpic] == (int)LATE_ARIB_SUBTITLE_PID &&
+           (m_LateAribSubtitleStream == -1 || m_LateAribSubtitleStream == streamIndex);
+}
+
 static int AribSectionWidth(const aribcc_caption_char_t &ch)
 {
     return (int)std::floor((ch.char_width + ch.char_horizontal_spacing) * ch.char_horizontal_scale);
@@ -946,6 +952,13 @@ STDMETHODIMP CLAVFDemuxer::OpenInputStream(AVIOContext *byteContext, LPCOLESTR p
         memcpy(fileName, "http", 4);
     }
 
+    ARIB_LOG("[ARIB] LAVF OpenInputStream file=\"%s\" forcedFormat=%s bForce=%d bFileSource=%d customIO=%d\n",
+             fileName ? fileName : "(null)",
+             format ? format : "(auto)",
+             bForce ? 1 : 0,
+             bFileSource ? 1 : 0,
+             byteContext ? 1 : 0);
+
     char *rtmp_prameters = nullptr;
     const char *rtsp_transport = nullptr;
     // check for rtsp transport protocol options
@@ -1129,6 +1142,8 @@ trynoformat:
     if (ret < 0)
     {
         DbgLog((LOG_ERROR, 0, TEXT("::OpenInputStream(): avformat_open_input failed (%d)"), ret));
+        ARIB_LOG("[ARIB] avformat_open_input failed ret=%d file=\"%s\" forcedFormat=%s\n",
+                 ret, fileName ? fileName : "(null)", format ? format : "(auto)");
         if (format)
         {
             DbgLog((LOG_ERROR, 0, TEXT(" -> trying again without specific format")));
@@ -1141,6 +1156,11 @@ trynoformat:
     DbgLog((LOG_TRACE, 10,
             TEXT("::OpenInputStream(): avformat_open_input opened file of type '%S' (took %I64d seconds)"),
             m_avFormat->iformat->name, time(nullptr) - m_timeOpening));
+    ARIB_LOG("[ARIB] avformat_open_input ok format=%s streams=%u programs=%u took=%llds\n",
+             m_avFormat->iformat ? m_avFormat->iformat->name : "(null)",
+             m_avFormat->nb_streams,
+             m_avFormat->nb_programs,
+             (long long)(time(nullptr) - m_timeOpening));
     m_timeOpening = 0;
 
     CHECK_HR(hr = InitAVFormat(pszFileName, bForce));
@@ -1460,6 +1480,18 @@ STDMETHODIMP CLAVFDemuxer::InitAVFormat(LPCOLESTR pszFileName, BOOL bForce)
     for (unsigned int idx = 0; idx < m_avFormat->nb_streams; ++idx)
     {
         AVStream *st = m_avFormat->streams[idx];
+        AVProgram *streamProgForLog = av_find_program_from_stream(m_avFormat, nullptr, idx);
+        ARIB_LOG("[ARIB] stream info idx=%u id=%d type=%d codec_id=%d codec=%s profile=%d disp=0x%x program=%d time_base=%d/%d\n",
+                 idx,
+                 st->id,
+                 st->codecpar->codec_type,
+                 (int)st->codecpar->codec_id,
+                 avcodec_get_name(st->codecpar->codec_id),
+                 st->codecpar->profile,
+                 st->disposition,
+                 streamProgForLog ? streamProgForLog->pmt_pid : -1,
+                 st->time_base.num,
+                 st->time_base.den);
 
         // Disable full stream parsing for these formats
         if (av_lav_stream_parser_get_needed(st) == AVSTREAM_PARSE_FULL)
@@ -1480,9 +1512,8 @@ STDMETHODIMP CLAVFDemuxer::InitAVFormat(LPCOLESTR pszFileName, BOOL bForce)
         UpdateParserFlags(st);
 
 #ifdef DEBUG
-        AVProgram *streamProg = av_find_program_from_stream(m_avFormat, nullptr, idx);
         DbgLog((LOG_TRACE, 30, L"Stream %d (pid %d) - program: %d, codec: %S; parsing: %S;", idx, st->id,
-                streamProg ? streamProg->pmt_pid : -1, avcodec_get_name(st->codecpar->codec_id),
+                streamProgForLog ? streamProgForLog->pmt_pid : -1, avcodec_get_name(st->codecpar->codec_id),
                 lavf_get_parsing_string(av_lav_stream_parser_get_needed(st))));
 #endif
         m_stOrigParser[idx] = av_lav_stream_parser_get_needed(st);
@@ -1669,6 +1700,8 @@ HRESULT CLAVFDemuxer::SetActiveStream(StreamType type, int pid)
 
     if (type == audio)
         UpdateForcedSubtitleStream(pid);
+    else if (type == subpic && pid != (int)LATE_ARIB_SUBTITLE_PID)
+        m_LateAribSubtitleStream = -1;
 
     hr = __super::SetActiveStream(type, pid);
 
@@ -1720,6 +1753,7 @@ HRESULT CLAVFDemuxer::SetActiveStream(StreamType type, int pid)
         else if (st->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE)
         {
             st->discard = (m_dActiveStreams[subpic] == idx ||
+                           IsLateAribSubtitleActive(idx) ||
                            (m_dActiveStreams[subpic] == FORCED_SUBTITLE_PID && m_ForcedSubStream == idx))
                               ? AVDISCARD_DEFAULT
                               : AVDISCARD_ALL;
@@ -2215,6 +2249,19 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
         if (m_bH264MVCCombine && stream->codecpar->codec_id == AV_CODEC_ID_H264_MVC)
             streamActive = TRUE;
 
+        if (!streamActive && stream->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE &&
+            stream->codecpar->codec_id == AV_CODEC_ID_ARIB_CAPTION && IsLateAribSubtitleActive(pkt.stream_index))
+        {
+            if (m_LateAribSubtitleStream == -1)
+            {
+                m_LateAribSubtitleStream = pkt.stream_index;
+                ARIB_LOG("[ARIB] bind late ARIB subtitle placeholder to stream=%d id=%d profile=%d\n",
+                         pkt.stream_index, stream->id, stream->codecpar->profile);
+            }
+            stream->discard = AVDISCARD_DEFAULT;
+            streamActive = TRUE;
+        }
+
         if (!streamActive)
         {
             if (stream->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE)
@@ -2359,6 +2406,7 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                 // Determine if this stream is superimpose based on AVStream profile
                 bool isSuperimpose = (stream->codecpar->profile == AV_PROFILE_ARIB_PROFILE_C);
                 int streamIdx = (int)pPacket->StreamId;
+                DWORD outputStreamId = IsLateAribSubtitleActive(streamIdx) ? LATE_ARIB_SUBTITLE_PID : (DWORD)streamIdx;
                 int dataSize  = pPacket->GetDataSize();
                 const uint8_t *rawData = pPacket->GetData();
 
@@ -2497,6 +2545,7 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                                 char roPrefix[32];
                                 snprintf(roPrefix, sizeof(roPrefix), "%ld,%d,Default,,0,0,0,,", ro, ev.layer);
                                 std::string payload = roPrefix + ev.payload;
+                                pPacket->StreamId = outputStreamId;
                                 pPacket->rtStop = rtNewStop;
                                 pPacket->SetData(payload.c_str(), (int)payload.size());
                                 pPacket->dwFlags |= LAV_PACKET_PARSED;
@@ -2511,7 +2560,7 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                                 const ASSEvent &ev = regionTexts[ri];
                                 Packet *rPkt = new Packet();
                                 if (!rPkt) break;
-                                rPkt->StreamId = (DWORD)streamIdx;
+                                rPkt->StreamId = outputStreamId;
                                 rPkt->rtStart = pPacket->rtStart;
                                 rPkt->rtStop  = pPacket->rtStop;
                                 rPkt->bDiscontinuity = TRUE;
@@ -2558,6 +2607,8 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                         {
                             return S_FALSE;
                         }
+                        if (pPacket)
+                            pPacket->StreamId = outputStreamId;
                     }
                     else
                     {
@@ -2630,6 +2681,8 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                             SAFE_DELETE(pPacket);
                             return S_FALSE;
                         }
+                        if (pPacket)
+                            pPacket->StreamId = outputStreamId;
                     }
                 }
                 else
@@ -3205,6 +3258,13 @@ STDMETHODIMP_(BOOL) CLAVFDemuxer::GetTrackInfo(UINT aTrackIdx, struct TrackEleme
         pStructureToFill->Type = TypeSubtitle;
         strcpy_s(pStructureToFill->Language, "und");
     }
+    else if (st->pid == LATE_ARIB_SUBTITLE_PID)
+    {
+        pStructureToFill->FlagDefault = 1;
+        pStructureToFill->FlagForced = 0;
+        pStructureToFill->Type = TypeSubtitle;
+        strcpy_s(pStructureToFill->Language, "jpn");
+    }
     else
     {
         const AVStream *avst = m_avFormat->streams[st->pid];
@@ -3237,6 +3297,8 @@ STDMETHODIMP_(BOOL) CLAVFDemuxer::GetTrackExtendedInfo(UINT aTrackIdx, void *pSt
         return FALSE;
 
     int id = GetStreamIdxFromTotalIdx(aTrackIdx);
+    if (id == (int)LATE_ARIB_SUBTITLE_PID)
+        return FALSE;
     if (id < 0 || (unsigned)id >= m_avFormat->nb_streams)
         return FALSE;
 
@@ -3297,8 +3359,10 @@ STDMETHODIMP_(BSTR) CLAVFDemuxer::GetTrackCodecName(UINT aTrackIdx)
         return nullptr;
 
     int id = GetStreamIdxFromTotalIdx(aTrackIdx);
+    if (id == (int)LATE_ARIB_SUBTITLE_PID)
+        return ConvertCharToBSTR("ARIB Captions");
     if (id < 0 || (unsigned)id >= m_avFormat->nb_streams)
-        return FALSE;
+        return nullptr;
 
     const AVStream *st = m_avFormat->streams[id];
 
@@ -3357,6 +3421,8 @@ STDMETHODIMP CLAVFDemuxer::Read(LPCOLESTR pszPropName, VARIANT *pVar, IErrorLog 
                 stream = m_dActiveStreams[nStreamType];
                 if (nStreamType == subpic && stream == FORCED_SUBTITLE_PID)
                     stream = m_ForcedSubStream;
+                else if (nStreamType == subpic && stream == (int)LATE_ARIB_SUBTITLE_PID)
+                    stream = m_LateAribSubtitleStream;
             }
             break;
         }
@@ -3390,6 +3456,15 @@ STDMETHODIMP CLAVFDemuxer::AddStream(int streamId)
         (!m_bSubStreams && (pStream->disposition & LAVF_DISPOSITION_SUB_STREAM)) ||
         (pStream->disposition & AV_DISPOSITION_ATTACHED_PIC))
     {
+        ARIB_LOG("[ARIB] AddStream skip idx=%d id=%d type=%d codec_id=%d tag=0x%08x discard=%d disp=0x%x substreams=%d\n",
+                 pStream->index,
+                 pStream->id,
+                 pStream->codecpar->codec_type,
+                 (int)pStream->codecpar->codec_id,
+                 (unsigned)pStream->codecpar->codec_tag,
+                 pStream->discard,
+                 pStream->disposition,
+                 m_bSubStreams ? 1 : 0);
         pStream->discard = AVDISCARD_ALL;
         return S_FALSE;
     }
@@ -3427,11 +3502,25 @@ STDMETHODIMP CLAVFDemuxer::AddStream(int streamId)
 
     switch (pStream->codecpar->codec_type)
     {
-    case AVMEDIA_TYPE_VIDEO: m_streams[video].push_back(s); break;
-    case AVMEDIA_TYPE_AUDIO: m_streams[audio].push_back(s); break;
+    case AVMEDIA_TYPE_VIDEO:
+        ARIB_LOG("[ARIB] AddStream video: idx=%d id=%d codec_id=%d\n",
+                 pStream->index, pStream->id, (int)pStream->codecpar->codec_id);
+        m_streams[video].push_back(s);
+        break;
+    case AVMEDIA_TYPE_AUDIO:
+        ARIB_LOG("[ARIB] AddStream audio: idx=%d id=%d codec_id=%d lang=%s\n",
+                 pStream->index, pStream->id, (int)pStream->codecpar->codec_id, s.language.c_str());
+        m_streams[audio].push_back(s);
+        break;
     case AVMEDIA_TYPE_SUBTITLE:
-        ARIB_LOG("[ARIB] AddStream subtitle: idx=%d codec_id=%d disp=0x%x\n",
-                 pStream->index, (int)pStream->codecpar->codec_id, pStream->disposition);
+        ARIB_LOG("[ARIB] AddStream subtitle: idx=%d id=%d codec_id=%d profile=%d disp=0x%x lang=%s extradata=%d\n",
+                 pStream->index,
+                 pStream->id,
+                 (int)pStream->codecpar->codec_id,
+                 pStream->codecpar->profile,
+                 pStream->disposition,
+                 s.language.c_str(),
+                 pStream->codecpar->extradata_size);
         // Mark ARIB captions as default so SelectSubtitleStream auto-selects them.
         // MPEG TS typically doesn't set AV_DISPOSITION_DEFAULT on caption streams,
         // but without it the subtitle selector (*:*|d) never matches.
@@ -3615,6 +3704,12 @@ STDMETHODIMP CLAVFDemuxer::CreateStreams()
     if (bHasPGS && m_pSettings->GetPGSForcedStream())
     {
         CreatePGSForcedSubtitleStream();
+    }
+
+    if (m_bMPEGTS && m_streams[subpic].empty())
+    {
+        ARIB_LOG("[ARIB] Create late ARIB subtitle placeholder pin\n");
+        CreateLateAribSubtitleStream();
     }
 
     // Create fake subtitle pin
@@ -4119,6 +4214,20 @@ const CBaseDemuxer::stream *CLAVFDemuxer::SelectSubtitleStream(std::list<CSubtit
             {
                 if ((it->dwFlagsSet == 0 || it->dwFlagsSet & SUBTITLE_FLAG_VIRTUAL) &&
                     does_language_match(it->subtitleLanguage, audioLanguage))
+                    checkedStreams.push_back(&*sit);
+                continue;
+            }
+
+            if (sit->pid == LATE_ARIB_SUBTITLE_PID)
+            {
+                const bool flagsSetMatch =
+                    it->dwFlagsSet == 0 || (it->dwFlagsSet & SUBTITLE_FLAG_DEFAULT);
+                const bool flagsNotMatch =
+                    !((it->dwFlagsNot & SUBTITLE_FLAG_DEFAULT) ||
+                      (it->dwFlagsNot & SUBTITLE_FLAG_FORCED) ||
+                      (it->dwFlagsNot & SUBTITLE_FLAG_IMPAIRED) ||
+                      (it->dwFlagsNot & SUBTITLE_FLAG_NORMAL));
+                if (flagsSetMatch && flagsNotMatch && does_language_match(it->subtitleLanguage, sit->language))
                     checkedStreams.push_back(&*sit);
                 continue;
             }

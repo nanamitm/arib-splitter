@@ -73,6 +73,49 @@ void CBaseDemuxer::CreatePGSForcedSubtitleStream()
     m_streams[subpic].push_back(s);
 }
 
+void CBaseDemuxer::CreateLateAribSubtitleStream()
+{
+    stream s;
+    s.pid = LATE_ARIB_SUBTITLE_PID;
+    s.streamInfo = new CStreamInfo();
+    s.language = "jpn";
+    s.lcid = 0;
+    s.trackName = "ARIB Captions";
+    s.streamInfo->codecInfo = "ARIB Captions";
+
+    CMediaType mtype;
+    mtype.majortype = MEDIATYPE_Subtitle;
+    mtype.subtype = MEDIASUBTYPE_ASS;
+    mtype.formattype = FORMAT_SubtitleInfo;
+
+    std::string assHeader =
+        "[Script Info]\r\n"
+        "ScriptType: v4.00+\r\n"
+        "PlayResX: 1920\r\n"
+        "PlayResY: 1080\r\n"
+        "WrapStyle: 2\r\n"
+        "\r\n"
+        "[V4+ Styles]\r\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, "
+        "Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\r\n"
+        "Style: Default,MS Gothic,64,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,"
+        "0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1\r\n"
+        "\r\n"
+        "[Events]\r\n"
+        "Format: ReadOrder, Layer, Style, Name, MarginL, MarginR, MarginV, Effect, Text\r\n";
+
+    SUBTITLEINFO *subInfo = (SUBTITLEINFO *)mtype.AllocFormatBuffer(sizeof(SUBTITLEINFO) + assHeader.size());
+    memset(subInfo, 0, mtype.FormatLength());
+    wcscpy_s(subInfo->TrackName, LATE_ARIB_SUB_STRING);
+    strcpy_s(subInfo->IsoLang, "jpn");
+    subInfo->dwOffset = sizeof(SUBTITLEINFO);
+    memcpy(mtype.pbFormat + sizeof(SUBTITLEINFO), assHeader.c_str(), assHeader.size());
+    s.streamInfo->mtypes.push_back(mtype);
+
+    m_streams[subpic].push_back(s);
+}
+
 // CStreamList
 const WCHAR *CBaseDemuxer::CStreamList::ToStringW(int type)
 {

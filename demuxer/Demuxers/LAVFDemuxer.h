@@ -201,6 +201,7 @@ class CLAVFDemuxer
 
     void CleanupAribDecoders();
     aribcc_decoder_t *GetOrCreateAribDecoder(int streamIndex, bool superimpose);
+    bool IsLateAribSubtitleActive(int streamIndex) const;
 
   private:
     friend class CBDDemuxer;
@@ -228,6 +229,7 @@ class CLAVFDemuxer
     std::deque<Packet *> m_MVCExtensionQueue;
 
     int m_ForcedSubStream = -1;
+    int m_LateAribSubtitleStream = -1;
     unsigned int m_program = 0;
 
     REFERENCE_TIME m_rtCurrent = 0;

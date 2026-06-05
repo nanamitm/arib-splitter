@@ -28,9 +28,11 @@
 #define DSHOW_TIME_BASE 10000000 // DirectShow times are in 100ns units
 #define NO_SUBTITLE_PID DWORD_MAX
 #define FORCED_SUBTITLE_PID (NO_SUBTITLE_PID - 1)
+#define LATE_ARIB_SUBTITLE_PID (NO_SUBTITLE_PID - 2)
 
 #define NO_SUB_STRING L"No subtitles"
 #define FORCED_SUB_STRING L"Forced Subtitles (auto)"
+#define LATE_ARIB_SUB_STRING L"ARIB Captions"
 
 struct ILAVFSettingsInternal;
 
@@ -153,6 +155,7 @@ class CBaseDemuxer : public CUnknown
     CBaseDemuxer(LPCTSTR pName, CCritSec *pLock);
     void CreateNoSubtitleStream();
     void CreatePGSForcedSubtitleStream();
+    void CreateLateAribSubtitleStream();
 
   public:
     // Get the StreamList of the corresponding type

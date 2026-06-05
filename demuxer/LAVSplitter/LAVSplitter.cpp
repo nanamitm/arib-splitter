@@ -607,6 +607,14 @@ STDMETHODIMP CLAVSplitter::LoadURL(LPCOLESTR pszURL, LPCOLESTR pszUserAgent, LPC
     LPWSTR extension = PathFindExtensionW(pszURL);
 
     DbgLog((LOG_TRACE, 10, L"::Load(): Opening file '%s' (extension: %s)", pszURL, extension));
+#ifdef ARIB_DEBUG_LOG
+    char *urlA = CoTaskGetMultiByteFromWideChar(CP_UTF8, 0, pszURL, -1);
+    char *extA = CoTaskGetMultiByteFromWideChar(CP_UTF8, 0, extension, -1);
+    AribDbgLog("[ARIB] Splitter LoadURL file=\"%s\" extension=\"%s\"\n",
+               urlA ? urlA : "(null)", extA ? extA : "(null)");
+    SAFE_CO_FREE(urlA);
+    SAFE_CO_FREE(extA);
+#endif
 
     // BDMV uses the BD demuxer, everything else LAVF
     if (_wcsicmp(extension, L".bdmv") == 0 || _wcsicmp(extension, L".mpls") == 0)
