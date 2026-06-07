@@ -144,6 +144,8 @@ A sample with all available keys is provided in `settings/ARIBSplitter.ini`.
 | `BackgroundPadding` | 1 | `1` extends the background to the full ARIB cell height (equal top/bottom padding from row spacing); `0` covers the glyph only |
 | `OutlineWidth` | 0 | Text outline thickness (ASS `\bord` value, 0 = none) |
 | `DelayMs` | 0 | Caption timing offset in milliseconds; negative values advance display |
+| `StretchChars` | *(empty)* | Characters that receive extra horizontal ASS `\fscx` scaling, for example `♬♪♫` |
+| `StretchScale` | 100 | Extra horizontal scale for `StretchChars`; `200` doubles the broadcast-specified width |
 
 ### [Superimpose] — superimpose-specific overrides
 

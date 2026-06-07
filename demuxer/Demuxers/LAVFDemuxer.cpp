@@ -248,6 +248,8 @@ struct AribCaptionSettings
     int          outlineWidth       = 0;    // ASS \bord value (0=no outline)
     std::string  fontName;                  // empty = use style default (MS Gothic)
     int          delayMs            = 0;    // timing offset in ms (can be negative)
+    std::vector<uint32_t> stretchChars;      // Unicode codepoints to stretch horizontally
+    int          stretchScale        = 100;  // extra ASS \fscx scale for stretchChars
 };
 
 // Fill iniPath with the path of the DLL with extension replaced by ".ini".
@@ -261,6 +263,8 @@ static void GetAribIniPath(WCHAR *iniPath, DWORD size)
     WCHAR *dot = wcsrchr(iniPath, L'.');
     if (dot) wcscpy_s(dot, size - (DWORD)(dot - iniPath), L".ini");
 }
+
+static uint32_t DecodeFirstUTF8Codepoint(const char *s);
 
 // Read settings from one INI section.  Keys absent from the section keep the
 // value already in |s| (i.e. the caller may pre-fill |s| as a fallback).
@@ -297,6 +301,36 @@ static void ReadIniSection(AribCaptionSettings &s, const WCHAR *iniPath, const W
     }
     if (present(L"DelayMs"))
         s.delayMs = max(-30000, min(30000, _wtoi(buf)));
+    if (present(L"StretchChars"))
+    {
+        s.stretchChars.clear();
+
+        int len = WideCharToMultiByte(CP_UTF8, 0, buf, -1, nullptr, 0, nullptr, nullptr);
+        if (len > 1)
+        {
+            std::string utf8(len - 1, '\0');
+            WideCharToMultiByte(CP_UTF8, 0, buf, -1, &utf8[0], len, nullptr, nullptr);
+
+            for (size_t i = 0; i < utf8.size();)
+            {
+                uint32_t cp = DecodeFirstUTF8Codepoint(utf8.c_str() + i);
+                if (cp == 0)
+                {
+                    i++;
+                    continue;
+                }
+                if (std::find(s.stretchChars.begin(), s.stretchChars.end(), cp) == s.stretchChars.end())
+                    s.stretchChars.push_back(cp);
+
+                if (cp < 0x80) i += 1;
+                else if (cp < 0x800) i += 2;
+                else if (cp < 0x10000) i += 3;
+                else i += 4;
+            }
+        }
+    }
+    if (present(L"StretchScale"))
+        s.stretchScale = max(10, min(400, _wtoi(buf)));
 }
 
 // Load settings for caption (isSuperimpose=false) or superimpose (true).
@@ -336,6 +370,15 @@ static bool IsUnicodeHalfwidthGlyph(const aribcc_caption_char_t &ch)
 {
     uint32_t cp = DecodeFirstUTF8Codepoint(ch.u8str);
     return cp < 0x80 || (cp >= 0xFF61 && cp <= 0xFF9F);
+}
+
+static bool ShouldStretchASSGlyph(const AribCaptionSettings &settings, const aribcc_caption_char_t &ch)
+{
+    if (settings.stretchScale == 100 || settings.stretchChars.empty() || ch.type == ARIBCC_CHARTYPE_DRCS)
+        return false;
+
+    uint32_t cp = DecodeFirstUTF8Codepoint(ch.u8str);
+    return cp != 0 && std::find(settings.stretchChars.begin(), settings.stretchChars.end(), cp) != settings.stretchChars.end();
 }
 
 // ---------------------------------------------------------------------------
@@ -519,7 +562,8 @@ static double AribTextOffsetY(const aribcc_caption_char_t &ch)
 
 // Build style + text payload for a single ARIB character (no \fsp).
 static std::string BuildASSSingleCharText(const aribcc_caption_t &caption,
-                                          const aribcc_caption_char_t &ch)
+                                          const aribcc_caption_char_t &ch,
+                                          const AribCaptionSettings &settings)
 {
     std::string result;
     int scaledH = (int)std::floor(ch.char_height * ch.char_vertical_scale);
@@ -530,10 +574,13 @@ static std::string BuildASSSingleCharText(const aribcc_caption_t &caption,
     bool needsGlyphSquish = ch.type != ARIBCC_CHARTYPE_DRCS &&
                             effectiveHScale < 0.99f &&
                             !IsUnicodeHalfwidthGlyph(ch);
-    if (needsGlyphSquish)
+    int fscx = needsGlyphSquish ? (int)std::lround(effectiveHScale * 100.0f) : 100;
+    if (ShouldStretchASSGlyph(settings, ch))
+        fscx = (int)std::lround((double)fscx * settings.stretchScale / 100.0);
+    if (fscx != 100)
     {
         char b[32];
-        snprintf(b, sizeof(b), "{\\fscx%d}", (int)std::lround(effectiveHScale * 100.0f));
+        snprintf(b, sizeof(b), "{\\fscx%d}", fscx);
         result += b;
     }
     {
@@ -609,7 +656,7 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
                     vr.cellHeight = AribSectionHeight(ch);
                     vr.isVertical = true;
                     vr.backColor  = ch.back_color;
-                    vr.text       = BuildASSSingleCharText(caption, ch);
+                    vr.text       = BuildASSSingleCharText(caption, ch, settings);
                     if (!vr.text.empty())
                         regions.push_back(vr);
                 }
@@ -632,7 +679,7 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
                 cr.cellHeight = AribSectionHeight(ch);
                 cr.isRuby     = region.is_ruby;
                 cr.backColor  = ch.back_color;
-                cr.text       = BuildASSSingleCharText(caption, ch);
+                cr.text       = BuildASSSingleCharText(caption, ch, settings);
                 if (!cr.text.empty())
                     regions.push_back(cr);
             }
@@ -652,7 +699,7 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
                 cr.cellHeight = AribSectionHeight(ch);
                 cr.isRuby     = region.is_ruby;
                 cr.backColor  = ch.back_color;
-                cr.text       = BuildASSSingleCharText(caption, ch);
+                cr.text       = BuildASSSingleCharText(caption, ch, settings);
                 if (!cr.text.empty())
                     regions.push_back(cr);
             }
@@ -764,7 +811,7 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
     }
     flushBackgroundRun();
 
-    // Ruby background pass — only when ShowRubyBackground=1.
+    // Ruby background pass - only when ShowRubyBackground=1.
     if (settings.showRubyBackground)
     {
         bool hasRubyRun = false;
