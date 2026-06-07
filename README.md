@@ -24,26 +24,22 @@ through DirectShow while exposing ARIB captions as subtitle samples.
   and timing offset (see [Configuration](#configuration))
 - MPC-BE external filter usage
 
-This repository is still close to the original LAV Filters tree.  Many decoder
-and demuxer files remain from upstream even when ARIBSplitter currently focuses
-on TS splitting and caption delivery.
+This repository is still close to the original LAV Filters tree.  Some demuxer
+and shared utility files remain from upstream because ARIBSplitter builds on
+that DirectShow splitter infrastructure.
 
 The release target of this fork is only `ARIBSplitter.ax`, built from
-`demuxer\LAVSplitter\LAVSplitter.vcxproj`.  Other LAV Filters decoder projects
-are kept in the tree mainly to preserve upstream context and make future LAV
-updates easier to compare, but they are not part of the release package.
+`demuxer\LAVSplitter\LAVSplitter.vcxproj`.
 
 ## Repository Layout
 
 ```text
 common/                 Shared DirectShow/base utility code from LAV Filters
-decoder/                Decoder projects inherited from LAV Filters
 demuxer/Demuxers/       Demuxing code and ARIB caption handling
 demuxer/LAVSplitter/    DirectShow splitter/source filter implementation
 ffmpeg/                 FFmpeg submodule
 libaribcaption/         libaribcaption submodule
 libbluray/              libbluray submodule
-qsdecoder/              Intel Quick Sync decoder submodule
 resources/              Filter resources
 thirdparty/             Prebuilt third-party headers/libraries from upstream
 ```
@@ -64,7 +60,6 @@ The project uses these submodules:
 - `ffmpeg`
 - `libaribcaption`
 - `libbluray`
-- `qsdecoder`
 
 ## Build
 
