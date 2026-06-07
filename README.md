@@ -144,6 +144,8 @@ A sample with all available keys is provided in `settings/ARIBSplitter.ini`.
 | `BackgroundPadding` | 1 | `1` extends the background to the full ARIB cell height (equal top/bottom padding from row spacing); `0` covers the glyph only |
 | `OutlineWidth` | 0 | Text outline thickness (ASS `\bord` value, 0 = none) |
 | `DelayMs` | 0 | Caption timing offset in milliseconds; negative values advance display |
+| `DebugLogPath` | *(empty)* | File path for ARIBSplitter debug logs. Empty disables file logging |
+| `VerboseLog` | 0 | `1` enables `OutputDebugString` and verbose ARIBSplitter logs in Release builds |
 | `StretchChars` | *(empty)* | Characters that receive extra horizontal ASS `\fscx` scaling, for example `♬♪♫` |
 | `StretchScale` | 100 | Extra horizontal scale for `StretchChars`; `200` doubles the broadcast-specified width |
 
@@ -160,6 +162,13 @@ Useful for giving news-ticker superimpose a different transparency or font.
 > **Font recommendation:** MS Gothic (the default) covers standard ARIB caption
 > characters.  For CJK Extension glyphs or rare kanji variants, consider
 > setting `FontName=Noto Sans JP` (requires the font to be installed separately).
+
+### Debug logging
+
+Release builds are quiet by default. Set `DebugLogPath` to write ARIBSplitter
+diagnostic logs to a file. Set `VerboseLog=1` to also emit those logs through
+`OutputDebugString` for DebugView or an attached debugger. Debug builds always
+emit `OutputDebugString` logs.
 
 ### Vertical text
 

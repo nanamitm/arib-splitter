@@ -101,9 +101,9 @@ jobs:
 
       - name: Build ARIBSplitter x64
         shell: cmd
-        run: MSBuild.exe LAVFilters.sln /nologo /m /t:Rebuild /property:Configuration=Release;Platform=x64
+        run: MSBuild.exe demuxer\LAVSplitter\LAVSplitter.vcxproj /nologo /m /t:Rebuild /property:Configuration=Release;Platform=x64;SolutionDir=%CD%\
 
-      - name: Verify ARIB debug logging is disabled
+      - name: Verify ARIB debug logging is disabled by default
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -133,6 +133,14 @@ jobs:
             if ($text.Contains($needle)) {
               throw "Release binary contains ARIB debug log marker: $needle"
             }
+          }
+
+          $ini = Get-Content -LiteralPath "settings\ARIBSplitter.ini" -Raw
+          if ($ini -notmatch '(?m)^DebugLogPath=\s*$') {
+            throw "Release INI must keep DebugLogPath empty by default."
+          }
+          if ($ini -notmatch '(?m)^VerboseLog=0\s*$') {
+            throw "Release INI must keep VerboseLog=0 by default."
           }
 
       # ---------- Package ----------

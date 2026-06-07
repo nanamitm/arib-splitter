@@ -26,13 +26,8 @@
 #include "InputPin.h"
 
 // Shared ARIB debug logger (defined in LAVFDemuxer.cpp)
-#ifdef ARIB_DEBUG_LOG
-#include <cstdio>
-#include <cstdarg>
 extern void AribDbgLog(const char *fmt, ...);
-#else
-static inline void AribDbgLog(const char *, ...) {}
-#endif
+extern void AribConfigureDebugLoggingFromIni();
 
 #include "BaseDemuxer.h"
 #include "LAVFDemuxer.h"
@@ -60,6 +55,7 @@ CLAVSplitter::CLAVSplitter(LPUNKNOWN pUnk, HRESULT *phr)
     m_InputFormats.insert(lavf_formats.begin(), lavf_formats.end());
 
     LoadSettings();
+    AribConfigureDebugLoggingFromIni();
 
     m_pInput = new CLAVInputPin(NAME("LAV Input Pin"), this, this, phr);
 
@@ -607,14 +603,13 @@ STDMETHODIMP CLAVSplitter::LoadURL(LPCOLESTR pszURL, LPCOLESTR pszUserAgent, LPC
     LPWSTR extension = PathFindExtensionW(pszURL);
 
     DbgLog((LOG_TRACE, 10, L"::Load(): Opening file '%s' (extension: %s)", pszURL, extension));
-#ifdef ARIB_DEBUG_LOG
+    AribConfigureDebugLoggingFromIni();
     char *urlA = CoTaskGetMultiByteFromWideChar(CP_UTF8, 0, pszURL, -1);
     char *extA = CoTaskGetMultiByteFromWideChar(CP_UTF8, 0, extension, -1);
     AribDbgLog("[ARIB] Splitter LoadURL file=\"%s\" extension=\"%s\"\n",
                urlA ? urlA : "(null)", extA ? extA : "(null)");
     SAFE_CO_FREE(urlA);
     SAFE_CO_FREE(extA);
-#endif
 
     // BDMV uses the BD demuxer, everything else LAVF
     if (_wcsicmp(extension, L".bdmv") == 0 || _wcsicmp(extension, L".mpls") == 0)

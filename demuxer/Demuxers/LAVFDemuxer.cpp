@@ -33,6 +33,12 @@
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <cstdarg>
+#include <cstdio>
+#include <cstring>
+#include <mutex>
+#include <string>
+#include <vector>
 
 extern "C"
 {
@@ -54,31 +60,109 @@ extern "C"
 #include "lavf_log.h"
 #endif
 
-// Temporary ARIB debug logging - write to %TEMP%\arib_debug.log
-#ifdef ARIB_DEBUG_LOG
-#include <cstdio>
-#include <cstdarg>
+// Fill iniPath with the path of the DLL with extension replaced by ".ini".
+static void GetAribIniPath(WCHAR *iniPath, DWORD size)
+{
+    HMODULE hMod = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCWSTR>(&GetAribIniPath), &hMod);
+    if (!GetModuleFileNameW(hMod, iniPath, size)) { iniPath[0] = L'\0'; return; }
+    WCHAR *dot = wcsrchr(iniPath, L'.');
+    if (dot) wcscpy_s(dot, size - (DWORD)(dot - iniPath), L".ini");
+}
+
+struct AribDebugLogConfig
+{
+    std::wstring filePath;
+    bool verbose = false;
+};
+
+static AribDebugLogConfig g_aribDebugLog;
+static std::mutex g_aribDebugLogMutex;
+
+void AribConfigureDebugLogging(const std::wstring &filePath, bool verbose)
+{
+    std::lock_guard<std::mutex> lock(g_aribDebugLogMutex);
+    g_aribDebugLog.filePath = filePath;
+    g_aribDebugLog.verbose = verbose;
+}
+
+void AribConfigureDebugLoggingFromIni()
+{
+    WCHAR iniPath[MAX_PATH] = {};
+    WCHAR path[MAX_PATH] = {};
+    WCHAR verbose[32] = {};
+    GetAribIniPath(iniPath, MAX_PATH);
+
+    std::wstring debugLogPath;
+    bool verboseLog = false;
+    if (GetPrivateProfileStringW(L"ARIB", L"DebugLogPath", L"", path, _countof(path), iniPath) > 0)
+        debugLogPath = path;
+    if (GetPrivateProfileStringW(L"ARIB", L"VerboseLog", L"", verbose, _countof(verbose), iniPath) > 0)
+        verboseLog = _wtoi(verbose) != 0;
+
+    AribConfigureDebugLogging(debugLogPath, verboseLog);
+}
+
+static bool GetAribDebugLogConfig(std::wstring &filePath, bool &verbose)
+{
+    std::lock_guard<std::mutex> lock(g_aribDebugLogMutex);
+    filePath = g_aribDebugLog.filePath;
+#ifdef _DEBUG
+    verbose = true;
+#else
+    verbose = g_aribDebugLog.verbose;
+#endif
+    return verbose || !filePath.empty();
+}
+
 void AribDbgLog(const char *fmt, ...)
 {
-    static char path[MAX_PATH] = {};
-    if (!path[0])
-    {
-        char tmp[MAX_PATH];
-        GetTempPathA(MAX_PATH, tmp);
-        snprintf(path, MAX_PATH, "%sarib_debug.log", tmp);
-    }
-    FILE *f = fopen(path, "a");
-    if (!f) return;
+    std::wstring filePath;
+    bool verbose = false;
+    if (!GetAribDebugLogConfig(filePath, verbose))
+        return;
+
+    char stackBuf[2048];
     va_list args;
     va_start(args, fmt);
-    vfprintf(f, fmt, args);
+    va_list argsCopy;
+    va_copy(argsCopy, args);
+    int needed = vsnprintf(stackBuf, sizeof(stackBuf), fmt, args);
     va_end(args);
-    fclose(f);
+
+    const char *text = stackBuf;
+    std::vector<char> dynamicBuf;
+    if (needed < 0)
+    {
+        va_end(argsCopy);
+        return;
+    }
+    if (needed >= static_cast<int>(sizeof(stackBuf)))
+    {
+        dynamicBuf.resize(static_cast<size_t>(needed) + 1);
+        vsnprintf(dynamicBuf.data(), dynamicBuf.size(), fmt, argsCopy);
+        text = dynamicBuf.data();
+    }
+    va_end(argsCopy);
+
+    if (verbose)
+        OutputDebugStringA(text);
+
+    if (filePath.empty())
+        return;
+
+    HANDLE file = CreateFileW(filePath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                              nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+        return;
+
+    DWORD ignored = 0;
+    WriteFile(file, text, static_cast<DWORD>(strlen(text)), &ignored, nullptr);
+    CloseHandle(file);
 }
 #define ARIB_LOG(...) AribDbgLog(__VA_ARGS__)
-#else
-#define ARIB_LOG(...) do {} while(0)
-#endif
 
 #include "BDDemuxer.h"
 #include "CueSheet.h"
@@ -252,18 +336,6 @@ struct AribCaptionSettings
     int          stretchScale        = 100;  // extra ASS \fscx scale for stretchChars
 };
 
-// Fill iniPath with the path of the DLL with extension replaced by ".ini".
-static void GetAribIniPath(WCHAR *iniPath, DWORD size)
-{
-    HMODULE hMod = nullptr;
-    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                       reinterpret_cast<LPCWSTR>(&GetAribIniPath), &hMod);
-    if (!GetModuleFileNameW(hMod, iniPath, size)) { iniPath[0] = L'\0'; return; }
-    WCHAR *dot = wcsrchr(iniPath, L'.');
-    if (dot) wcscpy_s(dot, size - (DWORD)(dot - iniPath), L".ini");
-}
-
 static uint32_t DecodeFirstUTF8Codepoint(const char *s);
 
 // Read settings from one INI section.  Keys absent from the section keep the
@@ -339,6 +411,7 @@ static AribCaptionSettings GetAribCaptionSettings(bool isSuperimpose = false)
 {
     WCHAR iniPath[MAX_PATH] = {};
     GetAribIniPath(iniPath, MAX_PATH);
+    AribConfigureDebugLoggingFromIni();
 
     AribCaptionSettings s;
     ReadIniSection(s, iniPath, L"ARIB");

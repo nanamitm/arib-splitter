@@ -28,11 +28,7 @@
 
 #include "PacketAllocator.h"
 
-#ifdef ARIB_DEBUG_LOG
 extern void AribDbgLog(const char *fmt, ...);
-#else
-static inline void AribDbgLog(const char *, ...) {}
-#endif
 
 CLAVOutputPin::CLAVOutputPin(std::deque<CMediaType> &mts, LPCWSTR pName, CBaseFilter *pFilter, CCritSec *pLock,
                              HRESULT *phr, CBaseDemuxer::StreamType pinType, const char *container)
