@@ -28,6 +28,11 @@ This repository is still close to the original LAV Filters tree.  Many decoder
 and demuxer files remain from upstream even when ARIBSplitter currently focuses
 on TS splitting and caption delivery.
 
+The release target of this fork is only `ARIBSplitter.ax`, built from
+`demuxer\LAVSplitter\LAVSplitter.vcxproj`.  Other LAV Filters decoder projects
+are kept in the tree mainly to preserve upstream context and make future LAV
+updates easier to compare, but they are not part of the release package.
+
 ## Repository Layout
 
 ```text
@@ -72,8 +77,8 @@ Build libaribcaption first if needed:
 build_libaribcaption.bat
 ```
 
-Then build the splitter project from `LAVFilters.sln`, or build
-`demuxer\LAVSplitter\LAVSplitter.vcxproj` directly with MSBuild.
+Then build `demuxer\LAVSplitter\LAVSplitter.vcxproj` directly with MSBuild.
+Building the whole `LAVFilters.sln` is not required for ARIBSplitter releases.
 
 Example:
 
