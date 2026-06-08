@@ -19,7 +19,7 @@ jobs:
 
     steps:
       - name: Checkout with submodules
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: recursive
 
@@ -97,7 +97,7 @@ jobs:
       # ---------- ARIBSplitter (MSBuild) ----------
 
       - name: Setup MSBuild
-        uses: microsoft/setup-msbuild@v2
+        uses: microsoft/setup-msbuild@v3
 
       - name: Build ARIBSplitter x64
         shell: cmd
@@ -150,7 +150,7 @@ jobs:
         run: .\make_release_package.ps1 -Version "${{ steps.ver.outputs.VERSION }}" -Platform x64
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ARIBSplitter-${{ steps.ver.outputs.VERSION }}-x64
           path: dist/*.zip
