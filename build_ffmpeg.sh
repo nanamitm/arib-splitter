@@ -1,21 +1,16 @@
 #!/bin/sh
 
-arch=x86
-archdir=Win32
+arch=x86_64
+archdir=x64
 clean_build=true
-cross_prefix=
+cross_prefix=x86_64-w64-mingw32-
 
 CV2PDB=../thirdparty/contrib/cv2pdb.exe
 
 for opt in "$@"
 do
     case "$opt" in
-    x86)
-            ;;
     x64 | amd64)
-            arch=x86_64
-            archdir=x64
-            cross_prefix=x86_64-w64-mingw32-
             ;;
     quick)
             clean_build=false
@@ -94,22 +89,12 @@ configure() (
   # libz.dll.a and libwinpthread.dll.a before invoking configure so that -lz
   # and -lwinpthread fall back to their static archives automatically.
   EXTRA_LDFLAGS="-static-libgcc"
-  PKG_CONFIG_PREFIX_DIR=""
-  if [ "${arch}" == "x86_64" ]; then
-    THIRDPARTY_ABS="$(cd ../thirdparty/64 && pwd)"
-    export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:${THIRDPARTY_ABS}/lib/pkgconfig/"
-    OPTIONS="${OPTIONS} --enable-cross-compile --cross-prefix=${cross_prefix} --target-os=mingw32 --pkg-config=pkg-config"
-    EXTRA_CFLAGS="${EXTRA_CFLAGS} -I${THIRDPARTY_ABS}/include -fno-omit-frame-pointer"
-    EXTRA_LDFLAGS="${EXTRA_LDFLAGS} -L${THIRDPARTY_ABS}/lib"
-    PKG_CONFIG_PREFIX_DIR="--define-variable=prefix=${THIRDPARTY_ABS}"
-  else
-    THIRDPARTY_ABS="$(cd ../thirdparty/32 && pwd)"
-    export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:${THIRDPARTY_ABS}/lib/pkgconfig/"
-    OPTIONS="${OPTIONS} --cpu=i686"
-    EXTRA_CFLAGS="${EXTRA_CFLAGS} -I${THIRDPARTY_ABS}/include -mmmx -msse -msse2 -mfpmath=sse -mstackrealign"
-    EXTRA_LDFLAGS="${EXTRA_LDFLAGS} -L${THIRDPARTY_ABS}/lib"
-    PKG_CONFIG_PREFIX_DIR="--define-variable=prefix=${THIRDPARTY_ABS}"
-  fi
+  THIRDPARTY_ABS="$(cd ../thirdparty/64 && pwd)"
+  export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:${THIRDPARTY_ABS}/lib/pkgconfig/"
+  OPTIONS="${OPTIONS} --enable-cross-compile --cross-prefix=${cross_prefix} --target-os=mingw32 --pkg-config=pkg-config"
+  EXTRA_CFLAGS="${EXTRA_CFLAGS} -I${THIRDPARTY_ABS}/include -fno-omit-frame-pointer"
+  EXTRA_LDFLAGS="${EXTRA_LDFLAGS} -L${THIRDPARTY_ABS}/lib"
+  PKG_CONFIG_PREFIX_DIR="--define-variable=prefix=${THIRDPARTY_ABS}"
 
   sh configure --extra-ldflags="${EXTRA_LDFLAGS}" --extra-cflags="${EXTRA_CFLAGS}" --pkg-config-flags="--static ${PKG_CONFIG_PREFIX_DIR}" ${OPTIONS}
 )

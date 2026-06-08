@@ -28,7 +28,7 @@ This repository is still close to the original LAV Filters tree.  Some demuxer
 and shared utility files remain from upstream because ARIBSplitter builds on
 that DirectShow splitter infrastructure.
 
-The release target of this fork is only `ARIBSplitter.ax`, built from
+The release target of this fork is only the x64 `ARIBSplitter.ax`, built from
 `demuxer\LAVSplitter\LAVSplitter.vcxproj`.
 
 ## Repository Layout
@@ -41,7 +41,7 @@ ffmpeg/                 FFmpeg submodule
 libaribcaption/         libaribcaption submodule
 libbluray/              libbluray submodule
 resources/              Filter resources
-thirdparty/             Prebuilt third-party headers/libraries from upstream
+thirdparty/             Prebuilt x64 third-party headers/libraries for FFmpeg
 ```
 
 Generated build outputs live under `bin_*` and are intentionally ignored.
@@ -63,8 +63,8 @@ The project uses these submodules:
 
 ## Build
 
-The current development build has been tested with Visual Studio/MSBuild on
-Windows x64.
+The current development and release build targets Windows x64 only and has
+been tested with Visual Studio/MSBuild.
 
 Build libaribcaption first if needed:
 
