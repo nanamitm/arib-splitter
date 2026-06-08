@@ -129,7 +129,7 @@
     <None Include="LAVSplitter.rc2" />
   </ItemGroup>
   <ItemGroup>
-    <CustomBuild Include="..\..\resources\LAVFilters.Dependencies.manifest">
+    <CustomBuild Include="..\..\resources\ARIBSplitter.Dependencies.manifest">
       <Command>copy "%(FullPath)" "$(IntermediateOutputPath).."</Command>
       <Message>Copying Manifest file</Message>
       <Outputs>$(IntermediateOutputPath)..\%(Filename)%(Extension);%(Outputs)</Outputs>
