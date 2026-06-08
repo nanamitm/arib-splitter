@@ -32,6 +32,36 @@ $rootFiles = @(
     "COPYING"
 )
 
+function Get-RuntimeFileHint {
+    param([string]$File)
+
+    switch ($File) {
+        "libwinpthread-1.dll" {
+            return @(
+                "libwinpthread-1.dll is copied from the MSYS2 MinGW64 runtime after building FFmpeg.",
+                "Run build_ffmpeg.sh x64 in an MSYS2 MINGW64 shell, or copy /mingw64/bin/libwinpthread-1.dll into bin_x64 before packaging."
+            )
+        }
+        { $_ -like "av*-lav-*.dll" -or $_ -like "sw*-lav-*.dll" } {
+            return @(
+                "This FFmpeg runtime DLL is produced by build_ffmpeg.sh.",
+                "Run build_ffmpeg.sh x64 before creating a release package."
+            )
+        }
+        "libbluray.dll" {
+            return @(
+                "libbluray.dll is produced by the Release|x64 build.",
+                "Build ARIBSplitter.sln or demuxer\LAVSplitter\LAVSplitter.vcxproj for Release|x64 before packaging."
+            )
+        }
+        default {
+            return @(
+                "Build ARIBSplitter for Release|x64 before creating a release package."
+            )
+        }
+    }
+}
+
 # settings/ARIBSplitter.ini → ARIBSplitter.ini in the package root
 $iniSrc = Join-Path $repoRoot "settings\ARIBSplitter.ini"
 
@@ -42,7 +72,14 @@ if (-not (Test-Path -LiteralPath $binDir)) {
 foreach ($file in $payload) {
     $path = Join-Path $binDir $file
     if (-not (Test-Path -LiteralPath $path)) {
-        throw "Required runtime file was not found: $path"
+        $hint = Get-RuntimeFileHint $file
+        $message = @(
+            "Required runtime file was not found: $path",
+            "",
+            "Hint:"
+        )
+        $message += $hint | ForEach-Object { "  $_" }
+        throw ($message -join [Environment]::NewLine)
     }
 }
 
