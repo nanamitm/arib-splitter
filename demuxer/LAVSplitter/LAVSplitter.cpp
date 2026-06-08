@@ -1904,8 +1904,7 @@ std::list<CSubtitleSelector> CLAVSplitter::GetSubtitleSelectors()
     return selectorList;
 }
 
-// Settings
-// ILAVAudioSettings
+// Splitter settings
 HRESULT CLAVSplitter::SetRuntimeConfig(BOOL bRuntimeConfig)
 {
     m_bRuntimeConfig = bRuntimeConfig;
