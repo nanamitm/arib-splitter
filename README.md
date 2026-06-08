@@ -73,7 +73,7 @@ build_libaribcaption.bat
 ```
 
 Then build `demuxer\LAVSplitter\LAVSplitter.vcxproj` directly with MSBuild.
-Building the whole `LAVFilters.sln` is not required for ARIBSplitter releases.
+Building the whole `ARIBSplitter.sln` is not required for ARIBSplitter releases.
 
 Example:
 
