@@ -26,8 +26,8 @@ $payload = @(
 )
 
 $rootFiles = @(
-    "install_aribsplitter.bat",
-    "uninstall_aribsplitter.bat",
+    "Install_ARIBSplitter_64.cmd",
+    "Uninstall_ARIBSplitter_64.cmd",
     "README.md",
     "COPYING"
 )

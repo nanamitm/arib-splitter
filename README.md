@@ -90,18 +90,21 @@ bin_x64\
 ## Register
 
 > **Administrator privileges are required.**
-> Right-click `install_aribsplitter.bat` and choose **Run as administrator**.
+> Right-click `Install_ARIBSplitter_64.cmd` and choose **Run as administrator**.
 
-```bat
-install_aribsplitter.bat
+```cmd
+Install_ARIBSplitter_64.cmd
 ```
 
-`regsvr32` will show a dialog confirming success or failure.
+The script calls `regsvr32` silently and then shows a success/failure message.
+Do not delete `ARIBSplitter.ax`, the bundled runtime DLLs, or
+`ARIBSplitter.ini` after installation. The installer does not copy files
+anywhere; the filter runs from the release-package folder.
 
 To unregister:
 
-```bat
-uninstall_aribsplitter.bat
+```cmd
+Uninstall_ARIBSplitter_64.cmd
 ```
 
 ## MPC-BE Setup
