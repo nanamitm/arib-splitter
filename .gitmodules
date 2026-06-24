@@ -6,4 +6,4 @@
 	url = https://gitea.1f0.de/LAV/libbluray.git
 [submodule "libaribcaption"]
 	path = libaribcaption
-	url = https://github.com/xqq/libaribcaption
+	url = https://github.com/nanamitm/libaribcaption.git
