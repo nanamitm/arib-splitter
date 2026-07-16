@@ -57,6 +57,23 @@ STDMETHODIMP CLAVFStreamInfo::CreateAudioMediaType(AVFormatContext *avctx, AVStr
         avstream->codecpar->codec_tag = av_codec_get_tag(mp_wav_taglists, avstream->codecpar->codec_id);
     }
 
+    // Some Japanese ARIB broadcast AAC streams carry a malformed Program Config
+    // Element that makes the demuxer report a bogus channel count (e.g. 30) and a
+    // zero sample rate in codecpar, even though every ADTS frame declares a valid
+    // channel_configuration (typically stereo). If that bogus count reaches the
+    // media type, LAV Audio initialises its AAC decoder for N channels, decodes
+    // zero frames and playback is completely silent. Clamp implausible AAC channel
+    // counts back to stereo so the decoder derives the real layout from the frames.
+    if (avstream->codecpar->codec_id == AV_CODEC_ID_AAC &&
+        (avstream->codecpar->ch_layout.nb_channels < 1 || avstream->codecpar->ch_layout.nb_channels > 8))
+    {
+        av_channel_layout_uninit(&avstream->codecpar->ch_layout);
+        av_channel_layout_default(&avstream->codecpar->ch_layout, 2);
+        avstream->codecpar->ch_layout.order = AV_CHANNEL_ORDER_UNSPEC;
+        if (!avstream->codecpar->sample_rate)
+            avstream->codecpar->sample_rate = 48000;
+    }
+
     if (avstream->codecpar->ch_layout.nb_channels == 0 || avstream->codecpar->sample_rate == 0)
     {
         if (avstream->codecpar->codec_id == AV_CODEC_ID_AAC && avstream->codecpar->bit_rate)
