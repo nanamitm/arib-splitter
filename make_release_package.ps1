@@ -17,10 +17,10 @@ $zipPath = Join-Path $distRoot "$packageName.zip"
 $payload = @(
     "ARIBSplitter.ax",
     "ARIBSplitter.Dependencies.manifest",
-    "avformat-lav-62.dll",
-    "avcodec-lav-62.dll",
-    "avutil-lav-60.dll",
-    "swresample-lav-6.dll",
+    "avformat-lav-63.dll",
+    "avcodec-lav-63.dll",
+    "avutil-lav-61.dll",
+    "swresample-lav-7.dll",
     "libbluray.dll",
     "libwinpthread-1.dll"
 )
