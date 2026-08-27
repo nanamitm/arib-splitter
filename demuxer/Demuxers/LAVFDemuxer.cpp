@@ -122,12 +122,40 @@ struct AribDebugLogConfig
 
 static AribDebugLogConfig g_aribDebugLog;
 static std::mutex g_aribDebugLogMutex;
+// Log file kept open between writes; reopened when the configured path changes.
+static HANDLE g_aribDebugLogFile = INVALID_HANDLE_VALUE;
+static std::wstring g_aribDebugLogOpenPath;
+
+// Caller must hold g_aribDebugLogMutex.
+static void CloseAribDebugLogFile()
+{
+    if (g_aribDebugLogFile != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(g_aribDebugLogFile);
+        g_aribDebugLogFile = INVALID_HANDLE_VALUE;
+    }
+    g_aribDebugLogOpenPath.clear();
+}
 
 void AribConfigureDebugLogging(const std::wstring &filePath, bool verbose)
 {
     std::lock_guard<std::mutex> lock(g_aribDebugLogMutex);
+    if (filePath != g_aribDebugLog.filePath)
+        CloseAribDebugLogFile();
     g_aribDebugLog.filePath = filePath;
     g_aribDebugLog.verbose = verbose;
+}
+
+// True when anything would actually be written. Lets ARIB_LOG skip building its
+// arguments while logging is off.
+bool AribDebugLogEnabled()
+{
+    std::lock_guard<std::mutex> lock(g_aribDebugLogMutex);
+#ifdef _DEBUG
+    return true;
+#else
+    return g_aribDebugLog.verbose || !g_aribDebugLog.filePath.empty();
+#endif
 }
 
 void AribConfigureDebugLoggingFromIni()
@@ -150,13 +178,16 @@ void AribConfigureDebugLoggingFromIni()
 static bool GetAribDebugLogConfig(std::wstring &filePath, bool &verbose)
 {
     std::lock_guard<std::mutex> lock(g_aribDebugLogMutex);
-    filePath = g_aribDebugLog.filePath;
 #ifdef _DEBUG
     verbose = true;
 #else
     verbose = g_aribDebugLog.verbose;
 #endif
-    return verbose || !filePath.empty();
+    // Copy the path only when something is actually going to be written.
+    if (!verbose && g_aribDebugLog.filePath.empty())
+        return false;
+    filePath = g_aribDebugLog.filePath;
+    return true;
 }
 
 void AribDbgLog(const char *fmt, ...)
@@ -195,16 +226,22 @@ void AribDbgLog(const char *fmt, ...)
     if (filePath.empty())
         return;
 
-    HANDLE file = CreateFileW(filePath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                              nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file == INVALID_HANDLE_VALUE)
-        return;
+    std::lock_guard<std::mutex> lock(g_aribDebugLogMutex);
+    if (g_aribDebugLogFile == INVALID_HANDLE_VALUE || g_aribDebugLogOpenPath != filePath)
+    {
+        CloseAribDebugLogFile();
+        g_aribDebugLogFile = CreateFileW(filePath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                         nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (g_aribDebugLogFile == INVALID_HANDLE_VALUE)
+            return;
+        g_aribDebugLogOpenPath = filePath;
+    }
 
     DWORD ignored = 0;
-    WriteFile(file, text, static_cast<DWORD>(strlen(text)), &ignored, nullptr);
-    CloseHandle(file);
+    WriteFile(g_aribDebugLogFile, text, static_cast<DWORD>(strlen(text)), &ignored, nullptr);
 }
-#define ARIB_LOG(...) AribDbgLog(__VA_ARGS__)
+// Skip evaluating the arguments (some of them build strings) unless logging is on.
+#define ARIB_LOG(...) ((void)(AribDebugLogEnabled() && (AribDbgLog(__VA_ARGS__), 0)))
 
 #include "BDDemuxer.h"
 #include "CueSheet.h"
@@ -467,16 +504,49 @@ static void ReadIniSection(AribCaptionSettings &s, const WCHAR *iniPath, const W
 
 // Load settings for caption (isSuperimpose=false) or superimpose (true).
 // [Superimpose] inherits from [ARIB] for any key not explicitly set.
+//
+// This runs for every caption event, so the result is cached and only re-read
+// when the INI's last write time changes (checked at most once a second).
+struct AribSettingsCache
+{
+    bool valid = false;
+    AribCaptionSettings settings;
+    FILETIME iniWriteTime{};
+    ULONGLONG lastCheckTick = 0;
+};
+
+static AribSettingsCache g_aribSettingsCache[2];
+static std::mutex g_aribSettingsMutex;
+
 static AribCaptionSettings GetAribCaptionSettings(bool isSuperimpose = false)
 {
     WCHAR iniPath[MAX_PATH] = {};
     GetAribIniPath(iniPath, MAX_PATH);
-    AribConfigureDebugLoggingFromIni();
+
+    std::lock_guard<std::mutex> lock(g_aribSettingsMutex);
+    AribSettingsCache &cache = g_aribSettingsCache[isSuperimpose ? 1 : 0];
+
+    ULONGLONG now = GetTickCount64();
+    if (cache.valid && now - cache.lastCheckTick < 1000)
+        return cache.settings;
+    cache.lastCheckTick = now;
+
+    FILETIME writeTime = {};
+    WIN32_FILE_ATTRIBUTE_DATA attributes = {};
+    if (GetFileAttributesExW(iniPath, GetFileExInfoStandard, &attributes))
+        writeTime = attributes.ftLastWriteTime;
+    if (cache.valid && CompareFileTime(&writeTime, &cache.iniWriteTime) == 0)
+        return cache.settings;
 
     AribCaptionSettings s;
     ReadIniSection(s, iniPath, L"ARIB");
     if (isSuperimpose)
         ReadIniSection(s, iniPath, L"Superimpose");
+    AribConfigureDebugLoggingFromIni();
+
+    cache.settings = s;
+    cache.iniWriteTime = writeTime;
+    cache.valid = true;
     return s;
 }
 

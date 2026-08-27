@@ -897,7 +897,7 @@ HRESULT CLAVSplitter::DeliverPacket(Packet *pPacket)
                     snprintf(buf, sizeof(buf),
                              "[ARIB] DeliverPacket DROPPED stream=%lu: pin exists but NOT in ActivePins. connected=%d\n",
                              pPacket->StreamId, (int)pAny->IsConnected());
-                    AribDbgLog(buf);
+                    AribDbgLog("%s", buf);
                 }
             }
         }
@@ -910,7 +910,7 @@ HRESULT CLAVSplitter::DeliverPacket(Packet *pPacket)
                 snprintf(buf, sizeof(buf),
                          "[ARIB] DeliverPacket DROPPED stream=%lu: pin NOT connected\n",
                          pPacket->StreamId);
-                AribDbgLog(buf);
+                AribDbgLog("%s", buf);
             }
         }
         delete pPacket;
