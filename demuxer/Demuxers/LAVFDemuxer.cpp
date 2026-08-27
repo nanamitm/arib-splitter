@@ -458,18 +458,44 @@ static bool ShouldStretchASSGlyph(const AribCaptionSettings &settings, const ari
 // DRCS utilities
 // ---------------------------------------------------------------------------
 
-// Unpack ARIB DRCS bit-packed pixels to 8-bit grayscale (0=black, 255=white).
-static std::vector<uint8_t> UnpackDRCSPixels(const uint8_t *raw, int w, int h, int depth_bits)
+// Number of bytes libaribcaption stores for a DRCS bitmap. Pixels are packed
+// as a continuous bit stream, so a pixel may straddle a byte boundary.
+static size_t DRCSBitmapSize(int w, int h, int depth_bits)
 {
-    std::vector<uint8_t> gray(w * h, 255);
-    if (!raw || depth_bits <= 0) return gray;
-    int pixPerByte = 8 / depth_bits;
-    int maxVal     = (1 << depth_bits) - 1;
-    for (int i = 0; i < w * h; ++i)
+    if (w <= 0 || h <= 0 || depth_bits <= 0 || depth_bits > 8)
+        return 0;
+    return ((size_t)w * (size_t)h * (size_t)depth_bits + 7) / 8;
+}
+
+// Unpack ARIB DRCS bit-packed pixels to 8-bit grayscale (0=black, 255=white).
+// rawSz is the size of the buffer behind |raw|; short buffers are rejected so a
+// malformed stream cannot make us read past the end of the bitmap.
+static std::vector<uint8_t> UnpackDRCSPixels(const uint8_t *raw, size_t rawSz, int w, int h, int depth_bits)
+{
+    size_t needed = DRCSBitmapSize(w, h, depth_bits);
+    std::vector<uint8_t> gray((size_t)max(w, 0) * (size_t)max(h, 0), 255);
+    if (!raw || needed == 0 || rawSz < needed)
+        return gray;
+
+    int maxVal = (1 << depth_bits) - 1;
+    for (size_t i = 0; i < gray.size(); ++i)
     {
-        int shift = (pixPerByte - 1 - (i % pixPerByte)) * depth_bits;
-        int val   = (raw[i / pixPerByte] >> shift) & maxVal;
-        gray[i]   = (uint8_t)(255 - val * 255 / maxVal);
+        // Read depth_bits bits starting at bit offset i * depth_bits (MSB first).
+        size_t bitPos = i * (size_t)depth_bits;
+        size_t byteIdx = bitPos >> 3;
+        int bitInByte = (int)(bitPos & 7);
+        int val = 0;
+        for (int b = 0; b < depth_bits; ++b)
+        {
+            int bit = (raw[byteIdx] >> (7 - bitInByte)) & 1;
+            val = (val << 1) | bit;
+            if (++bitInByte == 8)
+            {
+                bitInByte = 0;
+                byteIdx++;
+            }
+        }
+        gray[i] = (uint8_t)(255 - val * 255 / maxVal);
     }
     return gray;
 }
@@ -500,10 +526,18 @@ static std::string BuildDRCSDrawingText(const aribcc_caption_t &caption,
     uint8_t *raw = nullptr;
     size_t rawSz = 0;
     aribcc_drcs_get_pixels(drcs, &raw, &rawSz);
-    if (!raw || w <= 0 || h <= 0 || depth_bits <= 0)
+    if (!raw || w <= 0 || h <= 0 || depth_bits <= 0 || depth_bits > 8)
         return {};
 
-    auto gray = UnpackDRCSPixels(raw, w, h, depth_bits);
+    size_t needed = DRCSBitmapSize(w, h, depth_bits);
+    if (needed == 0 || rawSz < needed)
+    {
+        ARIB_LOG("[ARIB] DRCS bitmap too small: %dx%d depth_bits=%d need=%zu have=%zu\n",
+                 w, h, depth_bits, needed, rawSz);
+        return {};
+    }
+
+    auto gray = UnpackDRCSPixels(raw, rawSz, w, h, depth_bits);
     double scale = CaptionPlaneToASSScale(caption);
     double drawW = ch.char_width * ch.char_horizontal_scale * scale;
     double drawH = ch.char_height * ch.char_vertical_scale * scale;
