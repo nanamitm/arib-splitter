@@ -674,19 +674,30 @@ static std::string BuildDRCSDrawingText(const aribcc_caption_t &caption,
     if (drawW <= 0 || drawH <= 0)
         return {};
 
+    // One rectangle per horizontal run of set pixels rather than per pixel:
+    // a 36x36 glyph would otherwise produce over a thousand rectangles.
     std::string path;
-    path.reserve((size_t)w * h * 12);
+    path.reserve((size_t)w * h * 3);
     for (int y = 0; y < h; ++y)
     {
-        for (int x = 0; x < w; ++x)
+        int runStart = -1;
+        for (int x = 0; x <= w; ++x)
         {
-            if (gray[y * w + x] >= 250)
+            const bool set = (x < w) && gray[(size_t)y * w + x] < 250;
+            if (set)
+            {
+                if (runStart < 0)
+                    runStart = x;
+                continue;
+            }
+            if (runStart < 0)
                 continue;
 
-            int x1 = (int)std::floor(x * drawW / w);
+            int x1 = (int)std::floor(runStart * drawW / w);
             int y1 = (int)std::floor(y * drawH / h);
-            int x2 = (int)std::ceil((x + 1) * drawW / w);
+            int x2 = (int)std::ceil(x * drawW / w);
             int y2 = (int)std::ceil((y + 1) * drawH / h);
+            runStart = -1;
             if (x1 >= x2 || y1 >= y2)
                 continue;
 
