@@ -29,6 +29,7 @@
 #include "LAVSplitterSettingsInternal.h"
 
 #include "moreuuids.h"
+#include "AribCommon.h"
 
 #include <algorithm>
 #include <climits>
@@ -61,15 +62,56 @@ extern "C"
 #endif
 
 // Fill iniPath with the path of the DLL with extension replaced by ".ini".
-static void GetAribIniPath(WCHAR *iniPath, DWORD size)
+void AribGetIniPath(WCHAR *iniPath, DWORD size)
 {
     HMODULE hMod = nullptr;
     GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
                        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                       reinterpret_cast<LPCWSTR>(&GetAribIniPath), &hMod);
+                       reinterpret_cast<LPCWSTR>(&AribGetIniPath), &hMod);
     if (!GetModuleFileNameW(hMod, iniPath, size)) { iniPath[0] = L'\0'; return; }
     WCHAR *dot = wcsrchr(iniPath, L'.');
     if (dot) wcscpy_s(dot, size - (DWORD)(dot - iniPath), L".ini");
+}
+
+static void GetAribIniPath(WCHAR *iniPath, DWORD size)
+{
+    AribGetIniPath(iniPath, size);
+}
+
+// ASS script header used both for the subtitle media type extradata and for the
+// late-binding placeholder pin, so the two never drift apart.
+std::string AribBuildASSScriptHeader()
+{
+    WCHAR iniPath[MAX_PATH] = {};
+    AribGetIniPath(iniPath, MAX_PATH);
+
+    WCHAR fontW[256] = {};
+    GetPrivateProfileStringW(L"ARIB", L"FontName", L"MS Gothic", fontW, _countof(fontW), iniPath);
+    char fontA[256] = {};
+    WideCharToMultiByte(CP_UTF8, 0, fontW, -1, fontA, _countof(fontA), nullptr, nullptr);
+
+    char styleLine[512];
+    snprintf(styleLine, sizeof(styleLine),
+             "Style: Default,%s,64,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,"
+             "0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1\r\n", fontA);
+
+    // Timing comes from IMediaSample::GetTime(), so the event format starts with
+    // ReadOrder (matches mmts-dsfilter's convention and MPC-BE's expectation).
+    return std::string(
+               "[Script Info]\r\n"
+               "ScriptType: v4.00+\r\n"
+               "PlayResX: 1920\r\n"
+               "PlayResY: 1080\r\n"
+               "WrapStyle: 2\r\n"
+               "\r\n"
+               "[V4+ Styles]\r\n"
+               "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+               "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, "
+               "Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\r\n") +
+           styleLine +
+           "\r\n"
+           "[Events]\r\n"
+           "Format: ReadOrder, Layer, Style, Name, MarginL, MarginR, MarginV, Effect, Text\r\n";
 }
 
 struct AribDebugLogConfig

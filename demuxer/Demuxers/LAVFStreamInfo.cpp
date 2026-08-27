@@ -25,6 +25,7 @@
 #include "LAVFAudioHelper.h"
 #include "LAVFUtils.h"
 #include "moreuuids.h"
+#include "AribCommon.h"
 #include "H264Nalu.h"
 
 #include <vector>
@@ -893,48 +894,7 @@ STDMETHODIMP CLAVFStreamInfo::CreateSubtitleMediaType(AVFormatContext *avctx, AV
     // ASS renderer has style/resolution context for the dialogue events.
     if (avstream->codecpar->codec_id == AV_CODEC_ID_ARIB_CAPTION)
     {
-        // Use ReadOrder format: timing comes from IMediaSample::GetTime(),
-        // not from embedded Start/End in the packet data.
-        // This matches mmts-dsfilter's convention and MPC-BE's expectation.
-        // Read FontName from INI (same path as the DLL with .ini extension).
-        WCHAR iniPath[MAX_PATH] = {};
-        {
-            HMODULE hMod = nullptr;
-            static const DWORD s_anchor = 0; // address inside this DLL
-            GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                               reinterpret_cast<LPCWSTR>(&s_anchor), &hMod);
-            if (GetModuleFileNameW(hMod, iniPath, MAX_PATH))
-            {
-                WCHAR *dot = wcsrchr(iniPath, L'.');
-                if (dot) wcscpy_s(dot, MAX_PATH - (DWORD)(dot - iniPath), L".ini");
-            }
-        }
-        WCHAR fontW[256] = {};
-        GetPrivateProfileStringW(L"ARIB", L"FontName", L"MS Gothic", fontW, _countof(fontW), iniPath);
-        char fontA[256] = {};
-        WideCharToMultiByte(CP_UTF8, 0, fontW, -1, fontA, _countof(fontA), nullptr, nullptr);
-
-        char styleLine[512];
-        snprintf(styleLine, sizeof(styleLine),
-            "Style: Default,%s,64,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,"
-            "0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1\r\n", fontA);
-
-        std::string assHeader =
-            "[Script Info]\r\n"
-            "ScriptType: v4.00+\r\n"
-            "PlayResX: 1920\r\n"
-            "PlayResY: 1080\r\n"
-            "WrapStyle: 2\r\n"
-            "\r\n"
-            "[V4+ Styles]\r\n"
-            "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
-            "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, "
-            "Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\r\n"
-            + std::string(styleLine) +
-            "\r\n"
-            "[Events]\r\n"
-            "Format: ReadOrder, Layer, Style, Name, MarginL, MarginR, MarginV, Effect, Text\r\n";
+        std::string assHeader = AribBuildASSScriptHeader();
 
         size_t headerLen = assHeader.size();
         mtype.ReallocFormatBuffer((ULONG)(sizeof(SUBTITLEINFO) + headerLen));

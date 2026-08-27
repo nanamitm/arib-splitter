@@ -21,6 +21,7 @@
 #include "BaseDemuxer.h"
 
 #include "moreuuids.h"
+#include "AribCommon.h"
 
 CBaseDemuxer::CBaseDemuxer(LPCTSTR pName, CCritSec *pLock)
     : CUnknown(pName, nullptr)
@@ -88,24 +89,12 @@ void CBaseDemuxer::CreateLateAribSubtitleStream()
     mtype.subtype = MEDIASUBTYPE_ASS;
     mtype.formattype = FORMAT_SubtitleInfo;
 
-    std::string assHeader =
-        "[Script Info]\r\n"
-        "ScriptType: v4.00+\r\n"
-        "PlayResX: 1920\r\n"
-        "PlayResY: 1080\r\n"
-        "WrapStyle: 2\r\n"
-        "\r\n"
-        "[V4+ Styles]\r\n"
-        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
-        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, "
-        "Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\r\n"
-        "Style: Default,MS Gothic,64,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,"
-        "0,0,0,0,100,100,0,0,1,0,0,2,20,20,20,1\r\n"
-        "\r\n"
-        "[Events]\r\n"
-        "Format: ReadOrder, Layer, Style, Name, MarginL, MarginR, MarginV, Effect, Text\r\n";
+    // Same header as the real ARIB caption media type, so the placeholder pin
+    // honours [ARIB] FontName too.
+    std::string assHeader = AribBuildASSScriptHeader();
 
-    SUBTITLEINFO *subInfo = (SUBTITLEINFO *)mtype.AllocFormatBuffer(sizeof(SUBTITLEINFO) + assHeader.size());
+    SUBTITLEINFO *subInfo =
+        (SUBTITLEINFO *)mtype.AllocFormatBuffer((ULONG)(sizeof(SUBTITLEINFO) + assHeader.size()));
     memset(subInfo, 0, mtype.FormatLength());
     wcscpy_s(subInfo->TrackName, LATE_ARIB_SUB_STRING);
     strcpy_s(subInfo->IsoLang, "jpn");

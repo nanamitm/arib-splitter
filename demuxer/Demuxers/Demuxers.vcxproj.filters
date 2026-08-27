@@ -18,6 +18,9 @@
     <ClInclude Include="stdafx.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="AribCommon.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="BaseDemuxer.h">
       <Filter>Header Files</Filter>
     </ClInclude>

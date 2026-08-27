@@ -55,6 +55,7 @@
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="AribCommon.h" />
     <ClInclude Include="BaseDemuxer.h" />
     <ClInclude Include="BDDemuxer.h" />
     <ClInclude Include="ExtradataParser.h" />
