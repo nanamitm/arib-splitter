@@ -201,7 +201,9 @@ class CLAVFDemuxer
 
     void CleanupAribDecoders();
     aribcc_decoder_t *GetOrCreateAribDecoder(int streamIndex, bool superimpose);
+    bool IsLateAribPlaceholderSelected() const;
     bool IsLateAribSubtitleActive(int streamIndex) const;
+    bool IsLateAribCandidateStream(int streamIndex) const;
 
   private:
     friend class CBDDemuxer;

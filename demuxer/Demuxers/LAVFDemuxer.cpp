@@ -306,10 +306,28 @@ aribcc_decoder_t *CLAVFDemuxer::GetOrCreateAribDecoder(int streamIndex, bool sup
     return dec;
 }
 
+// True while the placeholder subtitle pin is the selected subtitle stream,
+// regardless of which ARIB stream it ended up bound to.
+bool CLAVFDemuxer::IsLateAribPlaceholderSelected() const
+{
+    return m_dActiveStreams[subpic] == (int)LATE_ARIB_SUBTITLE_PID;
+}
+
 bool CLAVFDemuxer::IsLateAribSubtitleActive(int streamIndex) const
 {
-    return m_dActiveStreams[subpic] == (int)LATE_ARIB_SUBTITLE_PID &&
+    return IsLateAribPlaceholderSelected() &&
            (m_LateAribSubtitleStream == -1 || m_LateAribSubtitleStream == streamIndex);
+}
+
+// ARIB caption streams must keep flowing while the placeholder pin is selected
+// but not yet bound, and after binding so a caption stream can take over from
+// superimpose.
+bool CLAVFDemuxer::IsLateAribCandidateStream(int streamIndex) const
+{
+    if (!IsLateAribPlaceholderSelected() || streamIndex < 0 ||
+        (unsigned)streamIndex >= m_avFormat->nb_streams)
+        return false;
+    return m_avFormat->streams[streamIndex]->codecpar->codec_id == AV_CODEC_ID_ARIB_CAPTION;
 }
 
 static int AribSectionWidth(const aribcc_caption_char_t &ch)
@@ -1907,7 +1925,7 @@ HRESULT CLAVFDemuxer::SetActiveStream(StreamType type, int pid)
         else if (st->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE)
         {
             st->discard = (m_dActiveStreams[subpic] == idx ||
-                           IsLateAribSubtitleActive(idx) ||
+                           IsLateAribCandidateStream(idx) ||
                            (m_dActiveStreams[subpic] == FORCED_SUBTITLE_PID && m_ForcedSubStream == idx))
                               ? AVDISCARD_DEFAULT
                               : AVDISCARD_ALL;
@@ -2404,14 +2422,33 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
             streamActive = TRUE;
 
         if (!streamActive && stream->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE &&
-            stream->codecpar->codec_id == AV_CODEC_ID_ARIB_CAPTION && IsLateAribSubtitleActive(pkt.stream_index))
+            stream->codecpar->codec_id == AV_CODEC_ID_ARIB_CAPTION && IsLateAribPlaceholderSelected())
         {
-            if (m_LateAribSubtitleStream == -1)
+            // A transport stream can carry both captions (profile A) and
+            // superimpose (profile C) on separate PIDs. Bind the placeholder pin
+            // to captions, and take over from superimpose if it got there first,
+            // otherwise the captions never reach the renderer.
+            const bool isSuperimpose = (stream->codecpar->profile == AV_PROFILE_ARIB_PROFILE_C);
+            const bool boundToSuperimpose =
+                m_LateAribSubtitleStream >= 0 &&
+                (unsigned)m_LateAribSubtitleStream < m_avFormat->nb_streams &&
+                m_avFormat->streams[m_LateAribSubtitleStream]->codecpar->profile == AV_PROFILE_ARIB_PROFILE_C;
+
+            if (m_LateAribSubtitleStream == -1 || (boundToSuperimpose && !isSuperimpose))
             {
+                ARIB_LOG("[ARIB] bind late ARIB subtitle placeholder to stream=%d id=%d profile=%d (was %d)\n",
+                         pkt.stream_index, stream->id, stream->codecpar->profile, m_LateAribSubtitleStream);
                 m_LateAribSubtitleStream = pkt.stream_index;
-                ARIB_LOG("[ARIB] bind late ARIB subtitle placeholder to stream=%d id=%d profile=%d\n",
-                         pkt.stream_index, stream->id, stream->codecpar->profile);
             }
+
+            if (m_LateAribSubtitleStream != pkt.stream_index)
+            {
+                // Bound to another stream (typically captions while this is
+                // superimpose): drop this packet instead of mixing both.
+                av_packet_unref(&pkt);
+                return S_FALSE;
+            }
+
             stream->discard = AVDISCARD_DEFAULT;
             streamActive = TRUE;
         }
