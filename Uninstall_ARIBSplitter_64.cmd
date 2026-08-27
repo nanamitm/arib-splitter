@@ -1,4 +1,6 @@
 @cd /d "%~dp0"
+@regsvr32.exe "%~dp0ARIBAudio.ax" /u /s
+@if %errorlevel% NEQ 0 goto error
 @regsvr32.exe "%~dp0ARIBSplitter.ax" /u /s
 @if %errorlevel% NEQ 0 goto error
 :success

@@ -22,14 +22,16 @@ through DirectShow while exposing ARIB captions as subtitle samples.
 - Caption timing: explicit `wait_duration` and indefinite-duration handling
 - INI-based configuration for font, transparency, background, outline width,
   and timing offset (see [Configuration](#configuration))
+- ARIB dual mono (bilingual) audio: main / sub selection in the bundled
+  `ARIBAudio.ax` decoder (see [ARIB dual mono audio](#arib-dual-mono-audio))
 - MPC-BE external filter usage
 
 This repository is still close to the original LAV Filters tree.  Some demuxer
 and shared utility files remain from upstream because ARIBSplitter builds on
 that DirectShow splitter infrastructure.
 
-The release target of this fork is only the x64 `ARIBSplitter.ax`, built from
-`demuxer\LAVSplitter\LAVSplitter.vcxproj`.
+The release targets of this fork are the x64 `ARIBSplitter.ax` and
+`ARIBAudio.ax`, built from `ARIBSplitter.sln`.
 
 ## Repository Layout
 
@@ -96,10 +98,11 @@ bin_x64\
 Install_ARIBSplitter_64.cmd
 ```
 
-The script calls `regsvr32` silently and then shows a success/failure message.
-Do not delete `ARIBSplitter.ax`, the bundled runtime DLLs, or
-`ARIBSplitter.ini` after installation. The installer does not copy files
-anywhere; the filter runs from the release-package folder.
+The script registers both `ARIBSplitter.ax` and `ARIBAudio.ax` with
+`regsvr32` silently and then shows a success/failure message. Do not delete
+either `.ax`, the bundled runtime DLLs, or `ARIBSplitter.ini` after
+installation. The installer does not copy files anywhere; the filters run from
+the release-package folder.
 
 To unregister:
 
@@ -118,6 +121,10 @@ Uninstall_ARIBSplitter_64.cmd
 > **ARIB Splitter** (the pure splitter without source) is only needed for
 > network streams where a separate source filter provides the data.
 
+For dual mono audio, add **ARIB Audio Decoder** the same way and set it to
+**Prefer**. It has its own CLSIDs, so it can be installed next to official LAV
+Filters; whichever one is preferred in MPC-BE is the one that decodes.
+
 ## Release Package
 
 Create a release zip from the x64 Release build:
@@ -126,9 +133,34 @@ Create a release zip from the x64 Release build:
 .\make_release_package.ps1 -Version 20260529
 ```
 
-The package is written under `dist\` and includes `ARIBSplitter.ax`, required
-runtime DLLs, install/uninstall scripts, `README.md`, `COPYING`, and a small
-`PACKAGE.txt` manifest.
+The package is written under `dist\` and includes `ARIBSplitter.ax`,
+`ARIBAudio.ax`, required runtime DLLs, install/uninstall scripts, `README.md`,
+`COPYING`, and a small `PACKAGE.txt` manifest.
+
+## ARIB dual mono audio
+
+Japanese bilingual programs are transmitted as a single AAC stream carrying two
+single channel elements: main audio on the left, sub audio on the right. A
+program can switch between ordinary stereo and dual mono partway through.
+
+`ARIBAudio.ax` selects which one to play. The chosen channel is copied to both
+outputs, so the output stays stereo and nothing renegotiates at the switch.
+
+| Mode | Meaning |
+| --- | --- |
+| 0 | Both — main left, sub right, as transmitted |
+| 1 | Main audio only (default) |
+| 2 | Sub audio only |
+
+Three ways to change it:
+
+- **During playback**: MPC-BE → **View** → **Filters** → **ARIB Audio Decoder**
+  → 主音声 / 副音声 / 主音声 + 副音声
+- **Property page**: the *ARIB Dual Mono* box on the decoder's settings page
+- **Registry**: `HKCU\Software\ARIBSplitter\Audio\DualMonoMode`
+
+The setting persists and applies from the next frame, so switching mid-program
+is immediate.
 
 ## Configuration
 

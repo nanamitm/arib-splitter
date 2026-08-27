@@ -16,6 +16,7 @@ $zipPath = Join-Path $distRoot "$packageName.zip"
 
 $payload = @(
     "ARIBSplitter.ax",
+    "ARIBAudio.ax",
     "ARIBSplitter.Dependencies.manifest",
     "avformat-lav-63.dll",
     "avcodec-lav-63.dll",
@@ -51,7 +52,13 @@ function Get-RuntimeFileHint {
         "libbluray.dll" {
             return @(
                 "libbluray.dll is produced by the Release|x64 build.",
-                "Build ARIBSplitter.sln or demuxer\LAVSplitter\LAVSplitter.vcxproj for Release|x64 before packaging."
+                "Build ARIBSplitter.sln for Release|x64 before packaging."
+            )
+        }
+        "ARIBAudio.ax" {
+            return @(
+                "ARIBAudio.ax is produced by the Release|x64 build of decoder\LAVAudio.",
+                "Build ARIBSplitter.sln for Release|x64 before packaging."
             )
         }
         default {

@@ -101,7 +101,7 @@ jobs:
 
       - name: Build ARIBSplitter x64
         shell: cmd
-        run: MSBuild.exe demuxer\LAVSplitter\LAVSplitter.vcxproj /nologo /m /t:Rebuild /property:Configuration=Release;Platform=x64;SolutionDir=%CD%\
+        run: MSBuild.exe ARIBSplitter.sln /nologo /m /t:Rebuild /property:Configuration=Release;Platform=x64
 
       - name: Verify ARIB debug logging is disabled by default
         shell: pwsh
@@ -111,16 +111,17 @@ jobs:
           # Logging is driven by [ARIB] DebugLogPath / VerboseLog in the INI,
           # plus _DEBUG which forces verbose output. Check both: the shipped INI
           # defaults, and that this really is a release build.
-          $binary = "bin_x64\ARIBSplitter.ax"
-          if (-not (Test-Path -LiteralPath $binary)) {
-            throw "Build output was not found: $binary"
-          }
-
-          $text = [Text.Encoding]::Latin1.GetString([IO.File]::ReadAllBytes($binary))
           $debugRuntimes = @("VCRUNTIME140D.dll", "MSVCP140D.dll", "ucrtbased.dll")
-          foreach ($needle in $debugRuntimes) {
-            if ($text -match [regex]::Escape($needle)) {
-              throw "Release binary links the debug CRT ($needle); _DEBUG forces verbose ARIB logging."
+          foreach ($binary in @("bin_x64\ARIBSplitter.ax", "bin_x64\ARIBAudio.ax")) {
+            if (-not (Test-Path -LiteralPath $binary)) {
+              throw "Build output was not found: $binary"
+            }
+
+            $text = [Text.Encoding]::Latin1.GetString([IO.File]::ReadAllBytes($binary))
+            foreach ($needle in $debugRuntimes) {
+              if ($text -match [regex]::Escape($needle)) {
+                throw "Release binary links the debug CRT ($needle); _DEBUG forces verbose ARIB logging."
+              }
             }
           }
 
