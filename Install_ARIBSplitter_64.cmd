@@ -1,5 +1,5 @@
 @cd /d "%~dp0"
-@regsvr32.exe "%~dp0\ARIBSplitter.ax" /s
+@regsvr32.exe "%~dp0ARIBSplitter.ax" /s
 @if %errorlevel% NEQ 0 goto error
 :success
 @echo.

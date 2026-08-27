@@ -108,30 +108,19 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $projectFiles = @(
-            "demuxer\Demuxers\Demuxers.vcxproj",
-            "demuxer\LAVSplitter\LAVSplitter.vcxproj"
-          )
-          foreach ($file in $projectFiles) {
-            [xml]$project = Get-Content -LiteralPath $file
-            $defs = $project.Project.ItemDefinitionGroup.ClCompile.PreprocessorDefinitions
-            foreach ($def in $defs) {
-              if ($def -match '(^|;)ARIB_DEBUG_LOG($|[;=])') {
-                throw "ARIB_DEBUG_LOG is enabled in $file"
-              }
-            }
-          }
-
+          # Logging is driven by [ARIB] DebugLogPath / VerboseLog in the INI,
+          # plus _DEBUG which forces verbose output. Check both: the shipped INI
+          # defaults, and that this really is a release build.
           $binary = "bin_x64\ARIBSplitter.ax"
           if (-not (Test-Path -LiteralPath $binary)) {
             throw "Build output was not found: $binary"
           }
 
           $text = [Text.Encoding]::Latin1.GetString([IO.File]::ReadAllBytes($binary))
-          $forbidden = @("arib_debug.log")
-          foreach ($needle in $forbidden) {
-            if ($text.Contains($needle)) {
-              throw "Release binary contains ARIB debug log marker: $needle"
+          $debugRuntimes = @("VCRUNTIME140D.dll", "MSVCP140D.dll", "ucrtbased.dll")
+          foreach ($needle in $debugRuntimes) {
+            if ($text -match [regex]::Escape($needle)) {
+              throw "Release binary links the debug CRT ($needle); _DEBUG forces verbose ARIB logging."
             }
           }
 
