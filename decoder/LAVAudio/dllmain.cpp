@@ -46,7 +46,7 @@ const AMOVIESETUP_PIN sudpPinsAudioDec[] = {{L"Input", FALSE, FALSE, FALSE, FALS
                                              CLAVAudio::sudPinTypesOutCount, CLAVAudio::sudPinTypesOut}};
 
 const AMOVIESETUP_FILTER sudFilterReg = {&__uuidof(CLAVAudio), // filter clsid
-                                         L"LAV Audio Decoder", // filter name
+                                         L"ARIB Audio Decoder", // filter name
                                          MERIT_PREFERRED + 3,  // merit
                                          countof(sudpPinsAudioDec), sudpPinsAudioDec, CLSID_LegacyAmFilterCategory};
 
@@ -58,10 +58,10 @@ CFactoryTemplate g_Templates[] = {
     // one entry for each CoCreate-able object
     {sudFilterReg.strName, sudFilterReg.clsID, CreateInstance<CLAVAudio>, nullptr, &sudFilterReg},
     // This entry is for the property page.
-    {L"LAV Audio Properties", &CLSID_LAVAudioSettingsProp, CreateInstance<CLAVAudioSettingsProp>, nullptr, nullptr},
-    {L"LAV Audio Mixer", &CLSID_LAVAudioMixingProp, CreateInstance<CLAVAudioMixingProp>, nullptr, nullptr},
-    {L"LAV Audio Format Settings", &CLSID_LAVAudioFormatsProp, CreateInstance<CLAVAudioFormatsProp>, nullptr, nullptr},
-    {L"LAV Audio Status", &CLSID_LAVAudioStatusProp, CreateInstance<CLAVAudioStatusProp>, nullptr, nullptr}};
+    {L"ARIB Audio Properties", &CLSID_LAVAudioSettingsProp, CreateInstance<CLAVAudioSettingsProp>, nullptr, nullptr},
+    {L"ARIB Audio Mixer", &CLSID_LAVAudioMixingProp, CreateInstance<CLAVAudioMixingProp>, nullptr, nullptr},
+    {L"ARIB Audio Format Settings", &CLSID_LAVAudioFormatsProp, CreateInstance<CLAVAudioFormatsProp>, nullptr, nullptr},
+    {L"ARIB Audio Status", &CLSID_LAVAudioStatusProp, CreateInstance<CLAVAudioStatusProp>, nullptr, nullptr}};
 int g_cTemplates = sizeof(g_Templates) / sizeof(g_Templates[0]);
 
 // self-registration entrypoint

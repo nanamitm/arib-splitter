@@ -1,6 +1,6 @@
 ; LAVAudio.def ; declares the exports
 
-LIBRARY         "LAVAudio.ax"
+LIBRARY         "ARIBAudio.ax"
 
 EXPORTS
                 DllGetClassObject PRIVATE

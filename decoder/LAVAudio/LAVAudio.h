@@ -53,9 +53,9 @@
 #define AV_CODEC_ID_PCM_UxxLE (AVCodecID)0x19004
 #define AV_CODEC_ID_PCM_QTRAW (AVCodecID)0x19005
 
-#define LAVC_AUDIO_REGISTRY_KEY L"Software\\LAV\\Audio"
-#define LAVC_AUDIO_REGISTRY_KEY_FORMATS L"Software\\LAV\\Audio\\Formats"
-#define LAVC_AUDIO_LOG_FILE L"LAVAudio.txt"
+#define LAVC_AUDIO_REGISTRY_KEY L"Software\\ARIBSplitter\\Audio"
+#define LAVC_AUDIO_REGISTRY_KEY_FORMATS L"Software\\ARIBSplitter\\Audio\\Formats"
+#define LAVC_AUDIO_LOG_FILE L"ARIBAudio.txt"
 
 struct WAVEFORMATEX_HDMV_LPCM;
 
@@ -78,7 +78,7 @@ struct BufferDetails
     }
 };
 
-class __declspec(uuid("E8E73B6B-4CB3-44A4-BE99-4F7BCB96E491")) CLAVAudio
+class __declspec(uuid("40920401-7808-4AB3-B7EF-6EEAF8C262F0")) CLAVAudio
     : public CTransformFilter
     , public ISpecifyPropertyPages2
     , public ILAVAudioSettings

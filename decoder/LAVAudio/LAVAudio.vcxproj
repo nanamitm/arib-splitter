@@ -45,10 +45,12 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)'=='Debug'">
+    <TargetName>ARIBAudio</TargetName>
     <TargetExt>.ax</TargetExt>
     <OutDir>$(SolutionDir)bin_$(PlatformName)d\</OutDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)'=='Release'">
+    <TargetName>ARIBAudio</TargetName>
     <TargetExt>.ax</TargetExt>
     <OutDir>$(SolutionDir)bin_$(PlatformName)\$(ProjectName)\</OutDir>
     <CustomBuildAfterTargets>Build</CustomBuildAfterTargets>
