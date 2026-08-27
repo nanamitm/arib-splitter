@@ -226,3 +226,23 @@ interface __declspec(uuid("A668B8F2-BA87-4F63-9D41-768F7DE9C50E")) ILAVAudioStat
     // Get Volume Average for the given channel
     STDMETHOD(GetChannelVolumeAverage)(WORD nChannel, float *pfDb) = 0;
 };
+
+// ARIB dual mono selection (fork specific)
+//
+// Japanese broadcasts transmit bilingual programs as a single AAC stream with
+// two single channel elements: main audio on the left, sub audio on the right.
+// The mode picks which one is played on both channels; the output stays
+// stereo, so nothing has to renegotiate when a program switches between
+// ordinary stereo and dual mono mid-stream.
+typedef enum LAVAudioDualMonoMode
+{
+    DualMono_Both = 0, // main on the left, sub on the right (as transmitted)
+    DualMono_Main = 1, // main audio only
+    DualMono_Sub = 2,  // sub audio only
+} LAVAudioDualMonoMode;
+
+interface __declspec(uuid("571CC80C-1DCF-41F2-94EF-546D071EC039")) ILAVAudioDualMono : public IUnknown
+{
+    STDMETHOD_(DWORD, GetDualMonoMode)() = 0;
+    STDMETHOD(SetDualMonoMode)(DWORD dwMode) = 0;
+};

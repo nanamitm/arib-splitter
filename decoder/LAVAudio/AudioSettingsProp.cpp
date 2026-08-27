@@ -42,11 +42,14 @@ HRESULT CLAVAudioSettingsProp::OnConnect(IUnknown *pUnk)
         return E_POINTER;
     }
     ASSERT(m_pAudioSettings == nullptr);
+    // The dual mono interface is fork specific, so treat it as optional.
+    pUnk->QueryInterface(&m_pDualMono);
     return pUnk->QueryInterface(&m_pAudioSettings);
 }
 
 HRESULT CLAVAudioSettingsProp::OnDisconnect()
 {
+    SafeRelease(&m_pDualMono);
     SafeRelease(&m_pAudioSettings);
     return S_OK;
 }
@@ -56,6 +59,14 @@ HRESULT CLAVAudioSettingsProp::OnApplyChanges()
     ASSERT(m_pAudioSettings != nullptr);
     HRESULT hr = S_OK;
     BOOL bFlag;
+
+    // ARIB dual mono
+    if (m_pDualMono)
+    {
+        LRESULT sel = SendDlgItemMessage(m_Dlg, IDC_DUALMONO_MODE, CB_GETCURSEL, 0, 0);
+        if (sel != CB_ERR)
+            m_pDualMono->SetDualMonoMode((DWORD)sel);
+    }
 
     // DRC
     int iDRCLevel = (int)SendDlgItemMessage(m_Dlg, IDC_DRC_LEVEL, TBM_GETPOS, 0, 0);
@@ -153,6 +164,13 @@ HRESULT CLAVAudioSettingsProp::OnActivate()
     hr = LoadData();
     if (SUCCEEDED(hr))
     {
+        SendDlgItemMessage(m_Dlg, IDC_DUALMONO_MODE, CB_RESETCONTENT, 0, 0);
+        SendDlgItemMessage(m_Dlg, IDC_DUALMONO_MODE, CB_ADDSTRING, 0, (LPARAM)L"Both (main left, sub right)");
+        SendDlgItemMessage(m_Dlg, IDC_DUALMONO_MODE, CB_ADDSTRING, 0, (LPARAM)L"Main audio only");
+        SendDlgItemMessage(m_Dlg, IDC_DUALMONO_MODE, CB_ADDSTRING, 0, (LPARAM)L"Sub audio only");
+        SendDlgItemMessage(m_Dlg, IDC_DUALMONO_MODE, CB_SETCURSEL, m_dwDualMonoMode, 0);
+        EnableWindow(GetDlgItem(m_Dlg, IDC_DUALMONO_MODE), m_pDualMono != nullptr);
+
         SendDlgItemMessage(m_Dlg, IDC_DRC, BM_SETCHECK, m_bDRCEnabled, 0);
 
         EnableWindow(GetDlgItem(m_Dlg, IDC_DRC_LEVEL), m_bDRCEnabled);
@@ -248,6 +266,9 @@ HRESULT CLAVAudioSettingsProp::LoadData()
 
     m_TrayIcon = m_pAudioSettings->GetTrayIcon();
 
+    if (m_pDualMono)
+        m_dwDualMonoMode = m_pDualMono->GetDualMonoMode();
+
     return hr;
 }
 
@@ -257,7 +278,13 @@ INT_PTR CLAVAudioSettingsProp::OnReceiveMessage(HWND hwnd, UINT uMsg, WPARAM wPa
     switch (uMsg)
     {
     case WM_COMMAND:
-        if (LOWORD(wParam) == IDC_DRC && HIWORD(wParam) == BN_CLICKED)
+        if (LOWORD(wParam) == IDC_DUALMONO_MODE && HIWORD(wParam) == CBN_SELCHANGE)
+        {
+            lValue = SendDlgItemMessage(m_Dlg, IDC_DUALMONO_MODE, CB_GETCURSEL, 0, 0);
+            if (lValue != CB_ERR && (DWORD)lValue != m_dwDualMonoMode)
+                SetDirty();
+        }
+        else if (LOWORD(wParam) == IDC_DRC && HIWORD(wParam) == BN_CLICKED)
         {
             lValue = SendDlgItemMessage(m_Dlg, IDC_DRC, BM_GETCHECK, 0, 0);
             if (lValue != m_bDRCEnabled)

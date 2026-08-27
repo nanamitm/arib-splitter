@@ -1,4 +1,4 @@
-/*
+﻿/*
  *      Copyright (C) 2010-2021 Hendrik Leppkes
  *      http://www.1f0.de
  *
@@ -186,6 +186,10 @@ HRESULT CLAVAudio::LoadDefaults()
 
     m_settings.SuppressFormatChanges = FALSE;
 
+    // ARIB dual mono: play the main audio by default. Bilingual programs
+    // otherwise come out with a different language on each channel.
+    m_settings.DualMonoMode = DualMono_Main;
+
     return S_OK;
 }
 
@@ -272,6 +276,10 @@ HRESULT CLAVAudio::ReadSettings(HKEY rootKey)
         bFlag = reg.ReadBOOL(L"Mixing", hr);
         if (SUCCEEDED(hr))
             m_settings.MixingEnabled = bFlag;
+
+        dwVal = reg.ReadDWORD(L"DualMonoMode", hr);
+        if (SUCCEEDED(hr) && dwVal <= DualMono_Sub)
+            m_settings.DualMonoMode = dwVal;
 
         dwVal = reg.ReadDWORD(L"MixingLayout", hr);
         if (SUCCEEDED(hr))
@@ -376,6 +384,8 @@ HRESULT CLAVAudio::SaveSettings()
         reg.WriteBOOL(L"AudioDelayEnabled", m_settings.AudioDelayEnabled);
         reg.WriteDWORD(L"AudioDelay", m_settings.AudioDelay);
 
+        reg.WriteDWORD(L"DualMonoMode", m_settings.DualMonoMode);
+
         reg.WriteBOOL(L"Mixing", m_settings.MixingEnabled);
         reg.WriteDWORD(L"MixingLayout", m_settings.MixingLayout);
         reg.WriteDWORD(L"MixingFlags", m_settings.MixingFlags);
@@ -455,8 +465,8 @@ STDMETHODIMP CLAVAudio::NonDelegatingQueryInterface(REFIID riid, void **ppv)
 
     *ppv = nullptr;
 
-    return QI(ISpecifyPropertyPages) QI(ISpecifyPropertyPages2) QI2(ILAVAudioSettings)
-        QI2(ILAVAudioStatus) __super::NonDelegatingQueryInterface(riid, ppv);
+    return QI(ISpecifyPropertyPages) QI(ISpecifyPropertyPages2) QI2(ILAVAudioSettings) QI2(ILAVAudioStatus)
+        QI(ILAVAudioDualMono) QI(IAMStreamSelect) __super::NonDelegatingQueryInterface(riid, ppv);
 }
 
 // ISpecifyPropertyPages2
@@ -1002,6 +1012,105 @@ HRESULT CLAVAudio::GetChannelVolumeAverage(WORD nChannel, float *pfDb)
     return S_OK;
 }
 
+// ARIB dual mono
+//
+// The bilingual case is transmitted as one AAC stream carrying two single
+// channel elements (main left, sub right). The FFmpeg AAC decoder can copy the
+// selected one onto both channels, so the output stays stereo and nothing has
+// to renegotiate when a program switches between stereo and dual mono.
+BOOL CLAVAudio::IsDualMonoCapable() const
+{
+    return m_nCodecId == AV_CODEC_ID_AAC || m_nCodecId == AV_CODEC_ID_AAC_LATM;
+}
+
+void CLAVAudio::ApplyDualMonoMode()
+{
+    if (!m_pAVCtx || !m_pAVCtx->priv_data || !IsDualMonoCapable())
+        return;
+
+    // The decoder reads this per frame, so switching during playback takes
+    // effect on the next frame without re-initialising anything.
+    // Our values match the decoder's: 0 = both, 1 = main, 2 = sub.
+    av_opt_set_int(m_pAVCtx->priv_data, "dual_mono_mode", (int64_t)m_settings.DualMonoMode, 0);
+}
+
+STDMETHODIMP_(DWORD) CLAVAudio::GetDualMonoMode()
+{
+    return m_settings.DualMonoMode;
+}
+
+STDMETHODIMP CLAVAudio::SetDualMonoMode(DWORD dwMode)
+{
+    if (dwMode > DualMono_Sub)
+        return E_INVALIDARG;
+
+    m_settings.DualMonoMode = dwMode;
+    ApplyDualMonoMode();
+    SaveSettings();
+
+    return S_OK;
+}
+
+// IAMStreamSelect
+static const WCHAR *const kDualMonoNames[] = {
+    L"主音声 + 副音声", // both, as transmitted
+    L"主音声",          // main only
+    L"副音声",          // sub only
+};
+
+STDMETHODIMP CLAVAudio::Count(DWORD *pcStreams)
+{
+    CheckPointer(pcStreams, E_POINTER);
+    *pcStreams = IsDualMonoCapable() ? (DWORD)_countof(kDualMonoNames) : 0;
+    return S_OK;
+}
+
+STDMETHODIMP CLAVAudio::Enable(long lIndex, DWORD dwFlags)
+{
+    if (!IsDualMonoCapable())
+        return E_NOTIMPL;
+    if (lIndex < 0 || lIndex >= (long)_countof(kDualMonoNames))
+        return S_FALSE;
+    if (!(dwFlags & AMSTREAMSELECTENABLE_ENABLE))
+        return S_FALSE;
+
+    return SetDualMonoMode((DWORD)lIndex);
+}
+
+STDMETHODIMP CLAVAudio::Info(long lIndex, AM_MEDIA_TYPE **ppmt, DWORD *pdwFlags, LCID *plcid, DWORD *pdwGroup,
+                             WCHAR **ppszName, IUnknown **ppObject, IUnknown **ppUnk)
+{
+    if (!IsDualMonoCapable())
+        return E_NOTIMPL;
+    if (lIndex < 0 || lIndex >= (long)_countof(kDualMonoNames))
+        return S_FALSE;
+
+    if (ppmt)
+        *ppmt = nullptr;
+    if (plcid)
+        *plcid = 0;
+    if (pdwGroup)
+        *pdwGroup = 0;
+    if (ppObject)
+        *ppObject = nullptr;
+    if (ppUnk)
+        *ppUnk = nullptr;
+    if (pdwFlags)
+        *pdwFlags = ((DWORD)lIndex == m_settings.DualMonoMode)
+                        ? (AMSTREAMSELECTINFO_ENABLED | AMSTREAMSELECTINFO_EXCLUSIVE)
+                        : 0;
+    if (ppszName)
+    {
+        size_t bytes = (wcslen(kDualMonoNames[lIndex]) + 1) * sizeof(WCHAR);
+        *ppszName = (WCHAR *)CoTaskMemAlloc(bytes);
+        if (!*ppszName)
+            return E_OUTOFMEMORY;
+        memcpy(*ppszName, kDualMonoNames[lIndex], bytes);
+    }
+
+    return S_OK;
+}
+
 // CTransformFilter
 HRESULT CLAVAudio::CheckInputType(const CMediaType *mtIn)
 {
@@ -1506,6 +1615,7 @@ HRESULT CLAVAudio::ffmpeg_init(AVCodecID codec, const void *format, const GUID f
     if (ret >= 0)
     {
         m_pFrame = av_frame_alloc();
+        ApplyDualMonoMode();
     }
     else
     {

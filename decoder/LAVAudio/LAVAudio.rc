@@ -94,6 +94,8 @@ BEGIN
     CONTROL         "Expand 6.1 to 7.1",IDC_EXPAND61,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,118,188,74,10
     CONTROL         "Use Legacy 5.1 channel layout",IDC_OUTPUT51_LEGACY,
                     "Button",BS_AUTOCHECKBOX | WS_TABSTOP,15,202,162,10
+    GROUPBOX        "ARIB Dual Mono",IDC_DUALMONO_BOX,207,192,151,27
+    COMBOBOX        IDC_DUALMONO_MODE,213,203,139,60,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     LTEXT           "LAV Audio Decoder x.xx",IDC_LAVAUDIO_FOOTER,209,221,149,8,0,WS_EX_RIGHT
     GROUPBOX        "Output Formats",IDC_OUTPUT_FORMATS,207,59,151,132
     LTEXT           "Select which output formats are available.\nThe best format is used automatically.",IDC_LBL_OUTPUTFORMATS,213,70,140,22

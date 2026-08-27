@@ -61,9 +61,11 @@ class CLAVAudioSettingsProp : public CBaseDSPropPage
 
   private:
     ILAVAudioSettings *m_pAudioSettings = nullptr;
+    ILAVAudioDualMono *m_pDualMono = nullptr;
 
     BOOL m_bDRCEnabled;
     int m_iDRCLevel;
+    DWORD m_dwDualMonoMode = DualMono_Main;
 
     bool m_bBitstreaming[Bitstream_NB];
     BOOL m_bDTSHDFraming;

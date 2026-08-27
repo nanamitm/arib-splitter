@@ -83,6 +83,8 @@ class __declspec(uuid("40920401-7808-4AB3-B7EF-6EEAF8C262F0")) CLAVAudio
     , public ISpecifyPropertyPages2
     , public ILAVAudioSettings
     , public ILAVAudioStatus
+    , public ILAVAudioDualMono
+    , public IAMStreamSelect
 {
   public:
     CLAVAudio(LPUNKNOWN pUnk, HRESULT *phr);
@@ -149,6 +151,18 @@ class __declspec(uuid("40920401-7808-4AB3-B7EF-6EEAF8C262F0")) CLAVAudio
     STDMETHODIMP EnableVolumeStats();
     STDMETHODIMP DisableVolumeStats();
     STDMETHODIMP GetChannelVolumeAverage(WORD nChannel, float *pfDb);
+
+    // ILAVAudioDualMono
+    STDMETHODIMP_(DWORD) GetDualMonoMode();
+    STDMETHODIMP SetDualMonoMode(DWORD dwMode);
+
+    // IAMStreamSelect
+    // Exposes main / sub / both as selectable "streams" so the mode can be
+    // switched from the player's filter menu without opening a property page.
+    STDMETHODIMP Count(DWORD *pcStreams);
+    STDMETHODIMP Enable(long lIndex, DWORD dwFlags);
+    STDMETHODIMP Info(long lIndex, AM_MEDIA_TYPE **ppmt, DWORD *pdwFlags, LCID *plcid, DWORD *pdwGroup,
+                      WCHAR **ppszName, IUnknown **ppObject, IUnknown **ppUnk);
 
     // CTransformFilter
     HRESULT CheckInputType(const CMediaType *mtIn);
@@ -319,8 +333,16 @@ class __declspec(uuid("40920401-7808-4AB3-B7EF-6EEAF8C262F0")) CLAVAudio
         DWORD MixingLFELevel;
 
         BOOL SuppressFormatChanges;
+
+        // ARIB dual mono: 0 = both, 1 = main only, 2 = sub only
+        DWORD DualMonoMode;
     } m_settings;
     BOOL m_bRuntimeConfig = FALSE;
+
+    // Push the dual mono selection into the AAC decoder (no-op for other codecs)
+    void ApplyDualMonoMode();
+    // True while the input is a codec that can carry ARIB dual mono
+    BOOL IsDualMonoCapable() const;
 
     BOOL m_bVolumeStats = FALSE;          // Volume Stats gathering enabled
     FloatingAverage<float> m_faVolume[MAX_VOLUME_STAT_CHANNEL]; // Floating Average for volume (8 channels)
