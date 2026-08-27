@@ -92,84 +92,251 @@ static const LPCWSTR kTsExtensions[] = {
     L".m2t",
 };
 
-static HRESULT RegisterExtensionSourceFilter(LPCWSTR ext, REFCLSID clsid)
+// The TS media type and extension keys are shared with every other DirectShow
+// filter on the machine, so registration saves whatever was there before and
+// uninstallation puts it back instead of deleting the key outright.
+static const LPCWSTR kRegistryBackupRoot = L"Software\\ARIBSplitter\\RegistryBackup";
+static const LPCWSTR kBackupExistedValue = L"__ARIBSplitterKeyExisted";
+
+static std::wstring GetClsidString(REFCLSID clsid)
 {
     WCHAR clsidStr[64] = {};
     if (StringFromGUID2(clsid, clsidStr, ARRAYSIZE(clsidStr)) == 0)
-        return E_FAIL;
+        return {};
+    return clsidStr;
+}
+
+static std::wstring GetStreamSubtypeKeyPath(REFGUID subtype)
+{
+    WCHAR majortypeStr[64] = {};
+    WCHAR subtypeStr[64] = {};
+    if (StringFromGUID2(MEDIATYPE_Stream, majortypeStr, ARRAYSIZE(majortypeStr)) == 0 ||
+        StringFromGUID2(subtype, subtypeStr, ARRAYSIZE(subtypeStr)) == 0)
+        return {};
 
     WCHAR keyPath[MAX_PATH] = {};
+    swprintf_s(keyPath, ARRAYSIZE(keyPath), L"Media Type\\%s\\%s", majortypeStr, subtypeStr);
+    return keyPath;
+}
+
+static std::wstring GetExtensionKeyPath(LPCWSTR ext)
+{
+    WCHAR keyPath[MAX_PATH] = {};
     swprintf_s(keyPath, ARRAYSIZE(keyPath), L"Media Type\\Extensions\\%s", ext);
+    return keyPath;
+}
+
+// Read the "Source Filter" value of a key, if it is a string.
+static bool ReadSourceFilterValue(HKEY hKey, std::wstring &value)
+{
+    DWORD type = 0;
+    DWORD bytes = 0;
+    if (RegQueryValueExW(hKey, L"Source Filter", nullptr, &type, nullptr, &bytes) != ERROR_SUCCESS ||
+        type != REG_SZ || bytes < sizeof(WCHAR))
+        return false;
+
+    std::vector<WCHAR> buf(bytes / sizeof(WCHAR) + 1, L'\0');
+    if (RegQueryValueExW(hKey, L"Source Filter", nullptr, &type, reinterpret_cast<BYTE *>(buf.data()), &bytes) !=
+        ERROR_SUCCESS)
+        return false;
+
+    value = buf.data();
+    return true;
+}
+
+// Copy every string value of |targetPath| into the backup area. Does nothing if
+// a backup already exists, so registering twice cannot overwrite the original.
+static void BackupRegistryKey(LPCWSTR targetPath, LPCWSTR backupName)
+{
+    std::wstring backupPath = std::wstring(kRegistryBackupRoot) + L"\\" + backupName;
+
+    HKEY hExisting = nullptr;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, backupPath.c_str(), 0, KEY_QUERY_VALUE, &hExisting) == ERROR_SUCCESS)
+    {
+        RegCloseKey(hExisting);
+        return;
+    }
+
+    HKEY hBackup = nullptr;
+    if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, backupPath.c_str(), 0, nullptr, REG_OPTION_NON_VOLATILE, KEY_SET_VALUE,
+                        nullptr, &hBackup, nullptr) != ERROR_SUCCESS)
+        return;
+
+    HKEY hTarget = nullptr;
+    DWORD existed = (RegOpenKeyExW(HKEY_CLASSES_ROOT, targetPath, 0, KEY_QUERY_VALUE, &hTarget) == ERROR_SUCCESS) ? 1 : 0;
+    RegSetValueExW(hBackup, kBackupExistedValue, 0, REG_DWORD, reinterpret_cast<const BYTE *>(&existed),
+                   sizeof(existed));
+
+    if (existed)
+    {
+        for (DWORD i = 0;; i++)
+        {
+            WCHAR name[16384] = {};
+            DWORD nameLen = ARRAYSIZE(name);
+            DWORD type = 0;
+            DWORD bytes = 0;
+            LONG r = RegEnumValueW(hTarget, i, name, &nameLen, nullptr, &type, nullptr, &bytes);
+            if (r == ERROR_NO_MORE_ITEMS)
+                break;
+            if (r != ERROR_SUCCESS || type != REG_SZ)
+                continue;
+
+            std::vector<BYTE> data(bytes ? bytes : sizeof(WCHAR), 0);
+            DWORD dataLen = (DWORD)data.size();
+            nameLen = ARRAYSIZE(name);
+            if (RegEnumValueW(hTarget, i, name, &nameLen, nullptr, &type, data.data(), &dataLen) != ERROR_SUCCESS)
+                continue;
+
+            RegSetValueExW(hBackup, name, 0, REG_SZ, data.data(), dataLen);
+        }
+        RegCloseKey(hTarget);
+    }
+
+    RegCloseKey(hBackup);
+}
+
+// Put |targetPath| back the way BackupRegistryKey() found it, but only while the
+// key still points at us - if another filter has taken over since, leave it be.
+static void RestoreRegistryKey(LPCWSTR targetPath, LPCWSTR backupName, const std::wstring &ourClsid)
+{
+    HKEY hTarget = nullptr;
+    if (RegOpenKeyExW(HKEY_CLASSES_ROOT, targetPath, 0, KEY_QUERY_VALUE | KEY_SET_VALUE, &hTarget) != ERROR_SUCCESS)
+        return;
+
+    std::wstring current;
+    bool ours = ReadSourceFilterValue(hTarget, current) && _wcsicmp(current.c_str(), ourClsid.c_str()) == 0;
+    RegCloseKey(hTarget);
+    if (!ours)
+        return;
+
+    std::wstring backupPath = std::wstring(kRegistryBackupRoot) + L"\\" + backupName;
+    HKEY hBackup = nullptr;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, backupPath.c_str(), 0, KEY_QUERY_VALUE, &hBackup) != ERROR_SUCCESS)
+    {
+        // No backup (installed by an older build): drop only our own value.
+        if (RegOpenKeyExW(HKEY_CLASSES_ROOT, targetPath, 0, KEY_SET_VALUE, &hTarget) == ERROR_SUCCESS)
+        {
+            RegDeleteValueW(hTarget, L"Source Filter");
+            RegCloseKey(hTarget);
+        }
+        return;
+    }
+
+    DWORD existed = 0;
+    DWORD type = 0;
+    DWORD bytes = sizeof(existed);
+    if (RegQueryValueExW(hBackup, kBackupExistedValue, nullptr, &type, reinterpret_cast<BYTE *>(&existed), &bytes) !=
+            ERROR_SUCCESS ||
+        type != REG_DWORD)
+        existed = 1;
+
+    if (!existed)
+    {
+        // The key did not exist before we installed, so it is ours to remove.
+        RegCloseKey(hBackup);
+        RegDeleteTreeW(HKEY_CLASSES_ROOT, targetPath);
+        RegDeleteTreeW(HKEY_LOCAL_MACHINE, backupPath.c_str());
+        return;
+    }
+
+    if (RegOpenKeyExW(HKEY_CLASSES_ROOT, targetPath, 0, KEY_QUERY_VALUE | KEY_SET_VALUE, &hTarget) == ERROR_SUCCESS)
+    {
+        // Remove the string values we added (anything not in the backup), then
+        // write the saved ones back.
+        std::vector<std::wstring> toDelete;
+        for (DWORD i = 0;; i++)
+        {
+            WCHAR name[16384] = {};
+            DWORD nameLen = ARRAYSIZE(name);
+            DWORD valType = 0;
+            LONG r = RegEnumValueW(hTarget, i, name, &nameLen, nullptr, &valType, nullptr, nullptr);
+            if (r == ERROR_NO_MORE_ITEMS)
+                break;
+            if (r != ERROR_SUCCESS || valType != REG_SZ)
+                continue;
+
+            DWORD savedBytes = 0;
+            DWORD savedType = 0;
+            if (RegQueryValueExW(hBackup, name, nullptr, &savedType, nullptr, &savedBytes) != ERROR_SUCCESS)
+                toDelete.push_back(name);
+        }
+        for (const auto &name : toDelete)
+            RegDeleteValueW(hTarget, name.c_str());
+
+        for (DWORD i = 0;; i++)
+        {
+            WCHAR name[16384] = {};
+            DWORD nameLen = ARRAYSIZE(name);
+            DWORD valType = 0;
+            DWORD valBytes = 0;
+            LONG r = RegEnumValueW(hBackup, i, name, &nameLen, nullptr, &valType, nullptr, &valBytes);
+            if (r == ERROR_NO_MORE_ITEMS)
+                break;
+            if (r != ERROR_SUCCESS || valType != REG_SZ)
+                continue;
+
+            std::vector<BYTE> data(valBytes ? valBytes : sizeof(WCHAR), 0);
+            DWORD dataLen = (DWORD)data.size();
+            nameLen = ARRAYSIZE(name);
+            if (RegEnumValueW(hBackup, i, name, &nameLen, nullptr, &valType, data.data(), &dataLen) != ERROR_SUCCESS)
+                continue;
+
+            RegSetValueExW(hTarget, name, 0, REG_SZ, data.data(), dataLen);
+        }
+        RegCloseKey(hTarget);
+    }
+
+    RegCloseKey(hBackup);
+    RegDeleteTreeW(HKEY_LOCAL_MACHINE, backupPath.c_str());
+}
+
+static HRESULT RegisterExtensionSourceFilter(LPCWSTR ext, REFCLSID clsid)
+{
+    std::wstring clsidStr = GetClsidString(clsid);
+    if (clsidStr.empty())
+        return E_FAIL;
+
+    std::wstring keyPath = GetExtensionKeyPath(ext);
+    BackupRegistryKey(keyPath.c_str(), ext + 1 /* skip the leading dot */);
 
     HKEY hKey = nullptr;
-    LONG r = RegCreateKeyExW(HKEY_CLASSES_ROOT, keyPath, 0, nullptr,
+    LONG r = RegCreateKeyExW(HKEY_CLASSES_ROOT, keyPath.c_str(), 0, nullptr,
                              REG_OPTION_NON_VOLATILE, KEY_SET_VALUE, nullptr, &hKey, nullptr);
     if (r != ERROR_SUCCESS)
         return HRESULT_FROM_WIN32(r);
 
     r = RegSetValueExW(hKey, L"Source Filter", 0, REG_SZ,
-                       reinterpret_cast<const BYTE *>(clsidStr),
-                       static_cast<DWORD>((wcslen(clsidStr) + 1) * sizeof(WCHAR)));
+                       reinterpret_cast<const BYTE *>(clsidStr.c_str()),
+                       static_cast<DWORD>((clsidStr.size() + 1) * sizeof(WCHAR)));
     RegCloseKey(hKey);
     return HRESULT_FROM_WIN32(r);
 }
 
 static void UnregisterExtensionSourceFilter(LPCWSTR ext, REFCLSID clsid)
 {
-    WCHAR clsidStr[64] = {};
-    if (StringFromGUID2(clsid, clsidStr, ARRAYSIZE(clsidStr)) == 0)
+    std::wstring clsidStr = GetClsidString(clsid);
+    if (clsidStr.empty())
         return;
 
-    WCHAR keyPath[MAX_PATH] = {};
-    swprintf_s(keyPath, ARRAYSIZE(keyPath), L"Media Type\\Extensions\\%s", ext);
-
-    HKEY hKey = nullptr;
-    LONG r = RegOpenKeyExW(HKEY_CLASSES_ROOT, keyPath, 0, KEY_QUERY_VALUE | KEY_SET_VALUE, &hKey);
-    if (r != ERROR_SUCCESS)
-        return;
-
-    WCHAR current[64] = {};
-    DWORD type = 0;
-    DWORD bytes = sizeof(current);
-    r = RegQueryValueExW(hKey, L"Source Filter", nullptr, &type, reinterpret_cast<BYTE *>(current), &bytes);
-    if (r == ERROR_SUCCESS && type == REG_SZ && _wcsicmp(current, clsidStr) == 0)
-        RegDeleteValueW(hKey, L"Source Filter");
-
-    RegCloseKey(hKey);
+    RestoreRegistryKey(GetExtensionKeyPath(ext).c_str(), ext + 1, clsidStr);
 }
 
 static void UnregisterStreamSourceFilterIfOwned(REFGUID subtype, REFCLSID clsid)
 {
-    WCHAR clsidStr[64] = {};
-    if (StringFromGUID2(clsid, clsidStr, ARRAYSIZE(clsidStr)) == 0)
+    std::wstring clsidStr = GetClsidString(clsid);
+    std::wstring keyPath = GetStreamSubtypeKeyPath(subtype);
+    if (clsidStr.empty() || keyPath.empty())
         return;
 
-    WCHAR majortypeStr[64] = {};
-    WCHAR subtypeStr[64] = {};
-    if (StringFromGUID2(MEDIATYPE_Stream, majortypeStr, ARRAYSIZE(majortypeStr)) == 0 ||
-        StringFromGUID2(subtype, subtypeStr, ARRAYSIZE(subtypeStr)) == 0)
-        return;
-
-    WCHAR keyPath[MAX_PATH] = {};
-    swprintf_s(keyPath, ARRAYSIZE(keyPath), L"Media Type\\%s\\%s", majortypeStr, subtypeStr);
-
-    HKEY hKey = nullptr;
-    LONG r = RegOpenKeyExW(HKEY_CLASSES_ROOT, keyPath, 0, KEY_QUERY_VALUE, &hKey);
-    if (r != ERROR_SUCCESS)
-        return;
-
-    WCHAR current[64] = {};
-    DWORD type = 0;
-    DWORD bytes = sizeof(current);
-    r = RegQueryValueExW(hKey, L"Source Filter", nullptr, &type, reinterpret_cast<BYTE *>(current), &bytes);
-    RegCloseKey(hKey);
-
-    if (r == ERROR_SUCCESS && type == REG_SZ && _wcsicmp(current, clsidStr) == 0)
-        RegDeleteTreeW(HKEY_CLASSES_ROOT, keyPath);
+    RestoreRegistryKey(keyPath.c_str(), L"MPEG2_TRANSPORT", clsidStr);
 }
 
 static HRESULT RegisterTsSourceFilters()
 {
+    std::wstring streamKeyPath = GetStreamSubtypeKeyPath(MEDIASUBTYPE_MPEG2_TRANSPORT);
+    if (!streamKeyPath.empty())
+        BackupRegistryKey(streamKeyPath.c_str(), L"MPEG2_TRANSPORT");
+
     std::list<LPCWSTR> chkbytes;
     chkbytes.push_back(L"0,1,,47");
     chkbytes.push_back(L"188,1,,47");
