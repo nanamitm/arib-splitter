@@ -666,6 +666,39 @@ struct AribASSRegion
     std::string text;
 };
 
+// Append caption text as ASS dialogue text. ARIB includes the ASCII set, so the
+// text can contain '{', '}' and '\\', which would otherwise be taken as an
+// override block or a tag like \N. Same approach as ffmpeg's
+// ff_ass_bprint_text_event(): escape '{' for libass and add an empty block for
+// standard ASS, break up backslash sequences with a word joiner (U+2060), and
+// turn line breaks into \N.
+static void AppendASSEscapedText(std::string &out, const char *utf8)
+{
+    if (!utf8)
+        return;
+
+    for (const char *p = utf8; *p; p++)
+    {
+        switch (*p)
+        {
+        case '{':
+            out += "\\{{}";
+            break;
+        case '\\':
+            out += "\\\xe2\x81\xa0";
+            break;
+        case '\r':
+            break;
+        case '\n':
+            out += "\\N";
+            break;
+        default:
+            out += *p;
+            break;
+        }
+    }
+}
+
 // True when consecutive characters in the region advance in Y (vertical writing).
 static bool IsVerticalRegion(const aribcc_caption_region_t &region)
 {
@@ -722,7 +755,7 @@ static std::string BuildASSSingleCharText(const aribcc_caption_t &caption,
     if (ch.type == ARIBCC_CHARTYPE_DRCS)
         result += BuildDRCSDrawingText(caption, ch);
     else if (ch.u8str[0] != '\0')
-        result += ch.u8str;
+        AppendASSEscapedText(result, ch.u8str);
     return result;
 }
 
@@ -986,7 +1019,11 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
 
     // Fallback: if no regions produced output, use plain text representation.
     if (results.empty() && caption.text && caption.text[0] != '\0')
-        results.push_back({1, std::string(caption.text)});
+    {
+        std::string plain;
+        AppendASSEscapedText(plain, caption.text);
+        results.push_back({1, std::move(plain)});
+    }
 
     return results;
 }
