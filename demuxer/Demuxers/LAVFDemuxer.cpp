@@ -322,6 +322,24 @@ CLAVFDemuxer::~CLAVFDemuxer()
     CleanupAribDecoders();
 }
 
+// Drop caption packets that are waiting for their stop time, plus the per-region
+// packets queued behind them. Used on seek and whenever the subtitle selection
+// changes, so packets addressed to the previous pin are not delivered late.
+void CLAVFDemuxer::FlushAribPendingPackets()
+{
+    for (auto &kv : m_aribPendingPackets)
+        delete kv.second;
+    m_aribPendingPackets.clear();
+    m_aribPendingExplicitStop.clear();
+    for (auto &kv : m_aribPendingExtras)
+        for (auto *p : kv.second)
+            delete p;
+    m_aribPendingExtras.clear();
+    for (auto *p : m_aribRegionQueue)
+        delete p;
+    m_aribRegionQueue.clear();
+}
+
 void CLAVFDemuxer::CleanupAribDecoders()
 {
     for (auto &kv : m_aribDecoders)
@@ -338,17 +356,7 @@ void CLAVFDemuxer::CleanupAribDecoders()
         aribcc_context_free(kv.second);
     m_aribSuperContexts.clear();
 
-    for (auto &kv : m_aribPendingPackets)
-        delete kv.second;
-    m_aribPendingPackets.clear();
-    m_aribPendingExplicitStop.clear();
-    for (auto &kv : m_aribPendingExtras)
-        for (auto *p : kv.second) delete p;
-    m_aribPendingExtras.clear();
-
-    for (auto *p : m_aribRegionQueue)
-        delete p;
-    m_aribRegionQueue.clear();
+    FlushAribPendingPackets();
 }
 
 aribcc_decoder_t *CLAVFDemuxer::GetOrCreateAribDecoder(int streamIndex, bool superimpose)
@@ -631,6 +639,54 @@ static std::vector<uint8_t> UnpackDRCSPixels(const uint8_t *raw, size_t rawSz, i
 }
 
 static double CaptionPlaneToASSScale(const aribcc_caption_t &caption);
+
+// ASS ReadOrder counter shared by every caption event of this process.
+static LONG g_aribReadOrder = 0;
+
+static LONG NextAribReadOrder()
+{
+    return InterlockedIncrement(&g_aribReadOrder);
+}
+
+// Copy a packet including its payload. Returns nullptr if it cannot be copied.
+static Packet *ClonePacket(Packet *src)
+{
+    if (!src)
+        return nullptr;
+    Packet *copy = new Packet();
+    copy->CopyProperties(src);
+    if (src->GetDataSize() > 0 && copy->SetData(src->GetData(), src->GetDataSize()) < 0)
+    {
+        delete copy;
+        return nullptr;
+    }
+    return copy;
+}
+
+// Replace the leading "ReadOrder," field of an ASS dialogue payload.
+static void RenumberASSReadOrder(Packet *packet, LONG readOrder)
+{
+    if (!packet || packet->GetDataSize() <= 0)
+        return;
+
+    const char *data = reinterpret_cast<const char *>(packet->GetData());
+    int size = packet->GetDataSize();
+    const char *comma = static_cast<const char *>(memchr(data, ',', size));
+    if (!comma)
+        return;
+
+    char prefix[32];
+    int prefixLen = snprintf(prefix, sizeof(prefix), "%ld", readOrder);
+    if (prefixLen <= 0)
+        return;
+
+    std::string payload;
+    payload.reserve((size_t)prefixLen + (size - (comma - data)));
+    payload.assign(prefix, prefixLen);
+    payload.append(comma, size - (comma - data));
+    packet->SetData(payload.c_str(), (int)payload.size());
+}
+
 
 static void AppendASSDrawingPoint(std::string &out, int v)
 {
@@ -2032,8 +2088,14 @@ HRESULT CLAVFDemuxer::SetActiveStream(StreamType type, int pid)
 
     if (type == audio)
         UpdateForcedSubtitleStream(pid);
-    else if (type == subpic && pid != (int)LATE_ARIB_SUBTITLE_PID)
-        m_LateAribSubtitleStream = -1;
+    else if (type == subpic)
+    {
+        // Anything still queued belongs to the previous selection.
+        if (pid != m_dActiveStreams[subpic])
+            FlushAribPendingPackets();
+        if (pid != (int)LATE_ARIB_SUBTITLE_PID)
+            m_LateAribSubtitleStream = -1;
+    }
 
     hr = __super::SetActiveStream(type, pid);
 
@@ -2858,24 +2920,6 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                             return p;
                         };
 
-                        auto clonePacket = [](Packet *src) -> Packet *
-                        {
-                            if (!src)
-                                return nullptr;
-                            Packet *copy = new Packet();
-                            if (!copy)
-                                return nullptr;
-                            copy->CopyProperties(src);
-                            if (src->GetDataSize() > 0 &&
-                                copy->SetData(src->GetData(), src->GetDataSize()) < 0)
-                            {
-                                delete copy;
-                                return nullptr;
-                            }
-                            return copy;
-                        };
-
-                        static LONG s_readOrder = 0;
                         Packet *toDeliver = nullptr;
 
                         if (regionTexts.empty())
@@ -2892,7 +2936,7 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                             // Build event 0 (main packet).
                             {
                                 const ASSEvent &ev = regionTexts[0];
-                                LONG ro = InterlockedIncrement(&s_readOrder);
+                                LONG ro = NextAribReadOrder();
                                 char roPrefix[32];
                                 snprintf(roPrefix, sizeof(roPrefix), "%ld,%d,Default,,0,0,0,,", ro, ev.layer);
                                 std::string payload = roPrefix + ev.payload;
@@ -2916,7 +2960,7 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                                 rPkt->rtStop  = pPacket->rtStop;
                                 rPkt->bDiscontinuity = TRUE;
                                 rPkt->dwFlags = LAV_PACKET_PARSED;
-                                LONG ro = InterlockedIncrement(&s_readOrder);
+                                LONG ro = NextAribReadOrder();
                                 char roPrefix[32];
                                 snprintf(roPrefix, sizeof(roPrefix), "%ld,%d,Default,,0,0,0,,", ro, ev.layer);
                                 std::string payload = roPrefix + ev.payload;
@@ -2976,30 +3020,16 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                             pendingRef->rtStop != Packet::INVALID_TIME && rt >= pendingRef->rtStop)
                         {
                             constexpr REFERENCE_TIME kIndefiniteChunk = 10LL * 10000000LL; // 10s
-                            auto clonePacket = [](Packet *src) -> Packet *
-                            {
-                                if (!src)
-                                    return nullptr;
-                                Packet *copy = new Packet();
-                                if (!copy)
-                                    return nullptr;
-                                copy->CopyProperties(src);
-                                if (src->GetDataSize() > 0 &&
-                                    copy->SetData(src->GetData(), src->GetDataSize()) < 0)
-                                {
-                                    delete copy;
-                                    return nullptr;
-                                }
-                                return copy;
-                            };
-
                             Packet *deliver = pendingRef;
-                            pendingRef = clonePacket(deliver);
+                            pendingRef = ClonePacket(deliver);
                             if (pendingRef)
                             {
                                 pendingRef->rtStart = deliver->rtStop;
                                 pendingRef->rtStop = pendingRef->rtStart + kIndefiniteChunk;
                                 pendingRef->bDiscontinuity = TRUE;
+                                // Renderers may key events by ReadOrder, so the
+                                // next chunk needs one of its own.
+                                RenumberASSReadOrder(pendingRef, NextAribReadOrder());
                             }
 
                             auto eit = m_aribPendingExtras.find(streamIdx);
@@ -3008,11 +3038,12 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                                 std::vector<Packet *> nextExtras;
                                 for (auto *ep : eit->second)
                                 {
-                                    Packet *nextExtra = clonePacket(ep);
+                                    Packet *nextExtra = ClonePacket(ep);
                                     if (nextExtra && pendingRef)
                                     {
                                         nextExtra->rtStart = pendingRef->rtStart;
                                         nextExtra->rtStop = pendingRef->rtStop;
+                                        RenumberASSReadOrder(nextExtra, NextAribReadOrder());
                                         nextExtras.push_back(nextExtra);
                                     }
                                     else
@@ -3287,16 +3318,7 @@ retry:
         aribcc_decoder_flush(kv.second);
     for (auto &kv : m_aribSuperDecoders)
         aribcc_decoder_flush(kv.second);
-    for (auto &kv : m_aribPendingPackets)
-        delete kv.second;
-    m_aribPendingPackets.clear();
-    m_aribPendingExplicitStop.clear();
-    for (auto &kv : m_aribPendingExtras)
-        for (auto *p : kv.second) delete p;
-    m_aribPendingExtras.clear();
-    for (auto *p : m_aribRegionQueue)
-        delete p;
-    m_aribRegionQueue.clear();
+    FlushAribPendingPackets();
 
     return S_OK;
 }
