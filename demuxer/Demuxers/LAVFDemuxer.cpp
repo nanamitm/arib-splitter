@@ -363,6 +363,9 @@ aribcc_decoder_t *CLAVFDemuxer::GetOrCreateAribDecoder(int streamIndex, bool sup
 {
     auto &decoderMap = superimpose ? m_aribSuperDecoders : m_aribDecoders;
     auto &contextMap = superimpose ? m_aribSuperContexts : m_aribContexts;
+    const aribcc_profile_t profile =
+        m_avFormat->streams[streamIndex]->codecpar->profile == AV_PROFILE_ARIB_PROFILE_C
+            ? ARIBCC_PROFILE_C : ARIBCC_PROFILE_A;
 
     auto it = decoderMap.find(streamIndex);
     if (it != decoderMap.end())
@@ -381,7 +384,7 @@ aribcc_decoder_t *CLAVFDemuxer::GetOrCreateAribDecoder(int streamIndex, bool sup
 
     aribcc_captiontype_t type = superimpose ? ARIBCC_CAPTIONTYPE_SUPERIMPOSE : ARIBCC_CAPTIONTYPE_CAPTION;
     if (!aribcc_decoder_initialize(dec, ARIBCC_ENCODING_SCHEME_AUTO, type,
-                                   ARIBCC_PROFILE_DEFAULT, ARIBCC_LANGUAGEID_FIRST))
+                                   profile, ARIBCC_LANGUAGEID_FIRST))
     {
         aribcc_decoder_free(dec);
         aribcc_context_free(ctx);
@@ -2095,6 +2098,7 @@ HRESULT CLAVFDemuxer::SetActiveStream(StreamType type, int pid)
             FlushAribPendingPackets();
         if (pid != (int)LATE_ARIB_SUBTITLE_PID)
             m_LateAribSubtitleStream = -1;
+            m_LateAribSubtitleIsSuperimpose = false;
     }
 
     hr = __super::SetActiveStream(type, pid);
@@ -2646,24 +2650,27 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
         if (!streamActive && stream->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE &&
             stream->codecpar->codec_id == AV_CODEC_ID_ARIB_CAPTION && IsLateAribPlaceholderSelected())
         {
-            // A transport stream can carry both captions (profile A) and
-            // superimpose (profile C) on separate PIDs. Bind the placeholder pin
-            // to captions, and take over from superimpose if it got there first,
-            // otherwise the captions never reach the renderer.
-            const bool isSuperimpose = (stream->codecpar->profile == AV_PROFILE_ARIB_PROFILE_C);
-            const bool boundToSuperimpose =
-                m_LateAribSubtitleStream >= 0 &&
-                (unsigned)m_LateAribSubtitleStream < m_avFormat->nb_streams &&
-                m_avFormat->streams[m_LateAribSubtitleStream]->codecpar->profile == AV_PROFILE_ARIB_PROFILE_C;
+            // Caption type is the PES data_identifier, independent of profile
+            // (A = full segment, C = one segment). Prefer captions on this pin.
+            if (pkt.size < 3 || (pkt.data[0] != 0x80 && pkt.data[0] != 0x81))
+            {
+                av_packet_unref(&pkt);
+                return S_FALSE;
+            }
+            const bool isSuperimpose = pkt.data[0] == 0x81;
+            const bool boundToSuperimpose = m_LateAribSubtitleIsSuperimpose;
 
             if (m_LateAribSubtitleStream == -1 || (boundToSuperimpose && !isSuperimpose))
             {
                 ARIB_LOG("[ARIB] bind late ARIB subtitle placeholder to stream=%d id=%d profile=%d (was %d)\n",
                          pkt.stream_index, stream->id, stream->codecpar->profile, m_LateAribSubtitleStream);
                 m_LateAribSubtitleStream = pkt.stream_index;
+                m_LateAribSubtitleIsSuperimpose = isSuperimpose;
+                FlushAribPendingPackets();
             }
 
-            if (m_LateAribSubtitleStream != pkt.stream_index)
+            if (m_LateAribSubtitleStream != pkt.stream_index ||
+                m_LateAribSubtitleIsSuperimpose != isSuperimpose)
             {
                 // Bound to another stream (typically captions while this is
                 // superimpose): drop this packet instead of mixing both.
@@ -2816,8 +2823,8 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
             // ARIB B-24 caption / superimpose decoding
             if (stream->codecpar->codec_id == AV_CODEC_ID_ARIB_CAPTION)
             {
-                // Determine if this stream is superimpose based on AVStream profile
-                bool isSuperimpose = (stream->codecpar->profile == AV_PROFILE_ARIB_PROFILE_C);
+                // 0x80 = captions, 0x81 = superimpose; profile is separate.
+                bool isSuperimpose = pPacket->GetDataSize() > 0 && pPacket->GetData()[0] == 0x81;
                 int streamIdx = (int)pPacket->StreamId;
                 DWORD outputStreamId = IsLateAribSubtitleActive(streamIdx) ? LATE_ARIB_SUBTITLE_PID : (DWORD)streamIdx;
                 int dataSize  = pPacket->GetDataSize();

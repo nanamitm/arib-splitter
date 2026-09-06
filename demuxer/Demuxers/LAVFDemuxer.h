@@ -233,6 +233,7 @@ class CLAVFDemuxer
 
     int m_ForcedSubStream = -1;
     int m_LateAribSubtitleStream = -1;
+    bool m_LateAribSubtitleIsSuperimpose = false;
     unsigned int m_program = 0;
 
     REFERENCE_TIME m_rtCurrent = 0;
