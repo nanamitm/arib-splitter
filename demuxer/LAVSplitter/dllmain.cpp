@@ -337,6 +337,11 @@ static HRESULT RegisterTsSourceFilters()
     if (!streamKeyPath.empty())
         BackupRegistryKey(streamKeyPath.c_str(), L"MPEG2_TRANSPORT");
 
+    // RegisterSourceFilter deletes these extension keys. Save them before
+    // calling it, otherwise RegisterExtensionSourceFilter sees empty keys.
+    for (LPCWSTR ext : kTsExtensions)
+        BackupRegistryKey(GetExtensionKeyPath(ext).c_str(), ext + 1);
+
     std::list<LPCWSTR> chkbytes;
     chkbytes.push_back(L"0,1,,47");
     chkbytes.push_back(L"188,1,,47");
