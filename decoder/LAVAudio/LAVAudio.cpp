@@ -1025,6 +1025,7 @@ BOOL CLAVAudio::IsDualMonoCapable() const
 
 void CLAVAudio::ApplyDualMonoMode()
 {
+    // Caller holds m_csReceive, also used by decoding and ffmpeg_init().
     if (!m_pAVCtx || !m_pAVCtx->priv_data || !IsDualMonoCapable())
         return;
 
@@ -1036,6 +1037,7 @@ void CLAVAudio::ApplyDualMonoMode()
 
 STDMETHODIMP_(DWORD) CLAVAudio::GetDualMonoMode()
 {
+    CAutoLock lock(&m_csReceive);
     return m_settings.DualMonoMode;
 }
 
@@ -1044,6 +1046,7 @@ STDMETHODIMP CLAVAudio::SetDualMonoMode(DWORD dwMode)
     if (dwMode > DualMono_Sub)
         return E_INVALIDARG;
 
+    CAutoLock lock(&m_csReceive);
     m_settings.DualMonoMode = dwMode;
     ApplyDualMonoMode();
     SaveSettings();
@@ -1060,6 +1063,7 @@ static const WCHAR *const kDualMonoNames[] = {
 
 STDMETHODIMP CLAVAudio::Count(DWORD *pcStreams)
 {
+    CAutoLock lock(&m_csReceive);
     CheckPointer(pcStreams, E_POINTER);
     *pcStreams = IsDualMonoCapable() ? (DWORD)_countof(kDualMonoNames) : 0;
     return S_OK;
@@ -1067,6 +1071,7 @@ STDMETHODIMP CLAVAudio::Count(DWORD *pcStreams)
 
 STDMETHODIMP CLAVAudio::Enable(long lIndex, DWORD dwFlags)
 {
+    CAutoLock lock(&m_csReceive);
     if (!IsDualMonoCapable())
         return E_NOTIMPL;
     if (lIndex < 0 || lIndex >= (long)_countof(kDualMonoNames))
@@ -1080,6 +1085,7 @@ STDMETHODIMP CLAVAudio::Enable(long lIndex, DWORD dwFlags)
 STDMETHODIMP CLAVAudio::Info(long lIndex, AM_MEDIA_TYPE **ppmt, DWORD *pdwFlags, LCID *plcid, DWORD *pdwGroup,
                              WCHAR **ppszName, IUnknown **ppObject, IUnknown **ppUnk)
 {
+    CAutoLock lock(&m_csReceive);
     if (!IsDualMonoCapable())
         return E_NOTIMPL;
     if (lIndex < 0 || lIndex >= (long)_countof(kDualMonoNames))
