@@ -201,6 +201,7 @@ class CLAVFDemuxer
 
     void CleanupAribDecoders();
     void FlushAribPendingPackets();
+    void QueueAribPendingPackets(REFERENCE_TIME watermark, bool eof);
     aribcc_decoder_t *GetOrCreateAribDecoder(int streamIndex, bool superimpose);
     bool IsLateAribPlaceholderSelected() const;
     bool IsLateAribSubtitleActive(int streamIndex) const;
@@ -208,6 +209,7 @@ class CLAVFDemuxer
 
   private:
     friend class CBDDemuxer;
+    friend struct AribDemuxerTest;
     AVFormatContext *m_avFormat = nullptr;
     const char *m_pszInputFormat = nullptr;
 
@@ -257,16 +259,17 @@ class CLAVFDemuxer
     std::map<int, aribcc_context_t *>  m_aribSuperContexts;
     std::map<int, aribcc_decoder_t *>  m_aribSuperDecoders;
 
-    // One buffered packet per ARIB stream: held until a later event arrives
-    // so we can set an accurate rtStop (prevents subtitles accumulating).
+    // Pending indefinite captions, keyed by stream index * 2 + caption type.
+    // A/V timestamps release short intervals; a caption event bounds the tail.
     std::map<int, Packet *> m_aribPendingPackets;
-    std::map<int, bool> m_aribPendingExplicitStop;
+    std::map<int, REFERENCE_TIME> m_aribPendingDelay;
+    REFERENCE_TIME m_aribLatestAVTime = 0;
 
     // Extra region packets (ruby etc.) stored alongside the pending packet.
     // Released and rtStop-corrected together with the primary pending packet.
     std::map<int, std::vector<Packet *>> m_aribPendingExtras;
 
-    // Per-region packets waiting to be returned from GetNextPacket.
+    // Packets waiting to be returned, including A/V behind released captions.
     std::deque<Packet *> m_aribRegionQueue;
     time_t m_timeOpening = 0;
 };
