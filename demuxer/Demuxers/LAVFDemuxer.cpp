@@ -2581,7 +2581,14 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
     bool bReturnEmpty = false;
 
     // Read packet
-    AVPacket pkt;
+    AVPacket pkt = {};
+    // SetPacket takes another reference; the demuxer's original reference
+    // must be released even when caption decoding returns early.
+    struct PacketUnref
+    {
+        AVPacket *packet;
+        ~PacketUnref() { av_packet_unref(packet); }
+    } packetUnref{&pkt};
     Packet *pPacket = nullptr;
 
     // assume we are not eof
