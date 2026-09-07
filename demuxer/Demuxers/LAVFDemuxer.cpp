@@ -3159,7 +3159,10 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                                 rPkt->StreamId = outputStreamId;
                                 rPkt->rtStart = pPacket->rtStart;
                                 rPkt->rtStop  = pPacket->rtStop;
-                                rPkt->bDiscontinuity = TRUE;
+                                // Another dialogue line of the same caption at the
+                                // same time, not a break in the stream.
+                                rPkt->bDiscontinuity = pPacket->bDiscontinuity;
+                                rPkt->bSyncPoint = pPacket->bSyncPoint;
                                 rPkt->dwFlags = LAV_PACKET_PARSED;
                                 LONG ro = NextAribReadOrder();
                                 char roPrefix[32];
