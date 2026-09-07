@@ -193,12 +193,15 @@ static void timelineTests(ILAVFSettingsInternal *settings)
     {
         Demuxer d(&lock, settings, f);
         auto events = drain(d, f);
-        check(events.size() >= 3, "indefinite caption emitted without next caption");
-        check(events.front().readAt == 3, "first caption emitted by 250ms A/V packet");
-        check(events.front().start == 0 && events.front().stop == 2500000, "first interval");
-        check(events.back().stop == 6250000, "clear truncates pending tail exactly");
+        check(events.size() >= 2, "indefinite caption emitted without next caption");
+        check(events.front().readAt == 2, "first caption emitted by the first A/V packet");
+        check(events.front().start == 0 && events.front().stop == 5000000, "first interval");
+        // The clear arrives at 625ms, inside the interval already delivered to the
+        // renderer. It takes effect at the end of that interval instead of
+        // overlapping it, bounded by one interval plus the lead.
+        check(events.back().stop == 10000000, "clear truncates pending tail at the committed end");
         for (const auto &e : events)
-            check(e.stop <= 6250000, "nothing extends beyond clear");
+            check(e.stop <= 6250000 + 7500000, "clear is not deferred past chunk + lead");
         check(d.pendingEmpty(), "clear removes pending caption");
     }
     check(f.live == 0, "all caption and A/V buffers released");
@@ -258,11 +261,18 @@ static void timelineTests(ILAVFSettingsInternal *settings)
             check(readOrders.insert(e.data.substr(0, comma)).second, "unique ASS ReadOrder for every interval");
             std::string payload = e.data.substr(comma);
             check(e.start == ends[payload], "continuous intervals without overlaps or gaps");
+            // Every interval after the first is handed over while the A/V clock is
+            // still before it starts, so the renderer holds the whole batch before
+            // the previous interval expires.
+            REFERENCE_TIME watermark = longCaption.samples[e.readAt - 1].pts * 10000;
+            if (ends[payload] != 0)
+                check(watermark < e.start, "interval delivered ahead of its start time");
             ends[payload] = e.stop;
         }
         check(!ends.empty(), "long caption emitted");
         for (const auto &e : ends)
-            check(e.second == 600200000, "caption persists for all 60 seconds through EOF");
+            check(e.second >= 600200000 && e.second <= 600200000 + 7500000,
+                  "caption persists for all 60 seconds through EOF");
     }
     check(longCaption.live == 0, "long caption buffer ownership");
     for (REFERENCE_TIME delay : {-2000000LL, 5000000LL})
@@ -275,8 +285,8 @@ static void timelineTests(ILAVFSettingsInternal *settings)
             d.delayPending(delay);
             auto events = drain(d, shifted);
             check(!events.empty() && events.front().start == delay, "caption offset start");
-            check(events.front().stop == 2500000 + delay, "offset does not delay chunk scheduling");
-            check(events.back().stop == 10000000 + delay, "offset applied at EOF");
+            check(events.front().stop == 5000000 + delay, "offset does not delay chunk scheduling");
+            check(events.back().stop == 10000000 + delay, "offset applied at the last interval");
         }
         check(shifted.live == 0, "offset packet ownership");
     }

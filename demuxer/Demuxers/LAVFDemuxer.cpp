@@ -692,28 +692,31 @@ static void RenumberASSReadOrder(Packet *packet, LONG readOrder)
 }
 
 
-// Release a short, already observed interval, retaining the caption for the
-// next interval. This bounds lookahead without committing a long future ASS
-// event that a later clear-screen packet could no longer shorten.
+// Length of one ASS event for a caption with an indefinite duration, and how far
+// ahead of that event's start it is committed to the renderer.
+static constexpr REFERENCE_TIME kAribCaptionChunk = 500LL * 10000LL;
+static constexpr REFERENCE_TIME kAribCaptionLead = 250LL * 10000LL;
+// Upper bound on intervals released in one call, so a jump in the A/V clock
+// cannot spin here.
+static constexpr int kAribCaptionMaxCatchUp = 8;
+
+// Release one interval of an indefinite caption, retaining it for the next one.
+// The interval is committed kAribCaptionLead before it is needed, so the renderer
+// receives and lays out the next batch of ASS events before the current interval
+// expires. Committing early stays bounded, because what is already delivered can
+// no longer be shortened by a later clear-screen or replacement packet.
 void CLAVFDemuxer::QueueAribPendingPackets(REFERENCE_TIME watermark, bool eof)
 {
-    constexpr REFERENCE_TIME chunk = 250LL * 10000LL;
     for (auto &entry : m_aribPendingPackets)
     {
         Packet *pending = entry.second;
         if (!pending)
             continue;
-        REFERENCE_TIME stop = watermark + m_aribPendingDelay[entry.first];
-        // A caption-only input may have neither a duration nor an A/V clock.
-        // Still deliver its final caption instead of silently dropping it.
-        if (eof && watermark <= 0)
-            stop = pending->rtStop;
-        if (!eof && stop < pending->rtStop)
-            continue;
         auto &extras = m_aribPendingExtras[entry.first];
-        if (stop > pending->rtStart)
-        {
-            auto emit = [&](Packet *source) {
+        const REFERENCE_TIME delay = m_aribPendingDelay[entry.first];
+
+        auto emit = [&](REFERENCE_TIME stop) {
+            auto release = [&](Packet *source) {
                 Packet *part = ClonePacket(source);
                 if (!part)
                     return;
@@ -721,12 +724,29 @@ void CLAVFDemuxer::QueueAribPendingPackets(REFERENCE_TIME watermark, bool eof)
                 RenumberASSReadOrder(part, NextAribReadOrder());
                 m_aribRegionQueue.push_back(part);
                 source->rtStart = stop;
-                source->rtStop = stop + chunk;
+                source->rtStop = stop + kAribCaptionChunk;
             };
-            emit(pending);
+            release(pending);
             for (Packet *extra : extras)
-                emit(extra);
+                release(extra);
+        };
+
+        if (eof)
+        {
+            // A caption-only input may have neither a duration nor an A/V clock.
+            // Still deliver its final caption instead of silently dropping it.
+            REFERENCE_TIME stop = (watermark <= 0) ? pending->rtStop : watermark + delay;
+            if (stop > pending->rtStart)
+                emit(stop);
+            continue;
         }
+
+        // Catch up in whole intervals, so a jump in the A/V clock cannot leave a
+        // hole between the last delivered interval and the current position.
+        for (int i = 0; i < kAribCaptionMaxCatchUp &&
+                        watermark + delay + kAribCaptionLead >= pending->rtStart;
+             ++i)
+            emit(pending->rtStop);
     }
     if (eof)
     {
@@ -896,7 +916,12 @@ struct AribASSRegion
     bool isRuby     = false;
     bool isVertical = false;
     uint32_t backColor = 0;
-    std::string text;
+    std::string text;    // style + glyph, as emitted for a single cell
+    std::string style;   // override tags only
+    std::string glyph;   // escaped glyph only
+    int  assFs     = 0;  // font size the style asks for
+    bool mergeable = false; // full width, unscaled, not DRCS: advance is one em
+    bool blank     = false; // draws nothing on its own
 };
 
 // Append caption text as ASS dialogue text. ARIB includes the ASCII set, so the
@@ -951,20 +976,23 @@ static double AribTextOffsetY(const aribcc_caption_char_t &ch)
     return ch.char_vertical_spacing * ch.char_vertical_scale / 2.0;
 }
 
-// Build style + text payload for a single ARIB character (no \fsp).
-static std::string BuildASSSingleCharText(const aribcc_caption_t &caption,
-                                          const aribcc_caption_char_t &ch,
-                                          const AribCaptionSettings &settings)
+// Build the override tags and the glyph of a single ARIB character separately, so
+// that a run of cells sharing one style can be emitted as a single ASS event.
+static void BuildASSCharParts(const aribcc_caption_t &caption,
+                              const aribcc_caption_char_t &ch,
+                              const AribCaptionSettings &settings,
+                              AribASSRegion &out)
 {
-    std::string result;
+    std::string style;
     int scaledH = (int)std::floor(ch.char_height * ch.char_vertical_scale);
     int assFs   = (caption.plane_height > 0 && scaledH > 0)
                   ? (int)(scaledH * 1080.0 / caption.plane_height) : 0;
-    if (assFs > 0) { char b[32]; snprintf(b, sizeof(b), "{\\fs%d}", assFs); result += b; }
+    if (assFs > 0) { char b[32]; snprintf(b, sizeof(b), "{\\fs%d}", assFs); style += b; }
     float effectiveHScale = ch.char_horizontal_scale;
+    bool halfwidth = IsUnicodeHalfwidthGlyph(ch);
     bool needsGlyphSquish = ch.type != ARIBCC_CHARTYPE_DRCS &&
                             effectiveHScale < 0.99f &&
-                            !IsUnicodeHalfwidthGlyph(ch);
+                            !halfwidth;
     int fscx = needsGlyphSquish ? (int)std::lround(effectiveHScale * 100.0f) : 100;
     if (ShouldStretchASSGlyph(settings, ch))
         fscx = (int)std::lround((double)fscx * settings.stretchScale / 100.0);
@@ -972,7 +1000,7 @@ static std::string BuildASSSingleCharText(const aribcc_caption_t &caption,
     {
         char b[32];
         snprintf(b, sizeof(b), "{\\fscx%d}", fscx);
-        result += b;
+        style += b;
     }
     {
         char b[64];
@@ -980,16 +1008,31 @@ static std::string BuildASSSingleCharText(const aribcc_caption_t &caption,
                  ARIBCC_COLOR_B(ch.text_color),
                  ARIBCC_COLOR_G(ch.text_color),
                  ARIBCC_COLOR_R(ch.text_color));
-        result += b;
+        style += b;
     }
-    if (ch.style & ARIBCC_CHARSTYLE_BOLD)      result += "{\\b1}";
-    if (ch.style & ARIBCC_CHARSTYLE_ITALIC)    result += "{\\i1}";
-    if (ch.style & ARIBCC_CHARSTYLE_UNDERLINE) result += "{\\u1}";
+    bool underlined = (ch.style & ARIBCC_CHARSTYLE_UNDERLINE) != 0;
+    if (ch.style & ARIBCC_CHARSTYLE_BOLD)   style += "{\\b1}";
+    if (ch.style & ARIBCC_CHARSTYLE_ITALIC) style += "{\\i1}";
+    if (underlined)                         style += "{\\u1}";
+
+    std::string glyph;
     if (ch.type == ARIBCC_CHARTYPE_DRCS)
-        result += BuildDRCSDrawingText(caption, ch);
+        glyph = BuildDRCSDrawingText(caption, ch);
     else if (ch.u8str[0] != '\0')
-        AppendASSEscapedText(result, ch.u8str);
-    return result;
+        AppendASSEscapedText(glyph, ch.u8str);
+
+    uint32_t cp = DecodeFirstUTF8Codepoint(ch.u8str);
+    out.assFs = assFs;
+    // A full width glyph advances exactly one em in any Japanese font, so its
+    // place inside a run can be reproduced with \fsp. Half width, horizontally
+    // scaled and DRCS cells depend on font metrics and stay one event each.
+    out.mergeable = ch.type != ARIBCC_CHARTYPE_DRCS && !halfwidth && fscx == 100 && assFs > 0;
+    // A blank cell paints nothing of its own; its background rect is a separate
+    // event, so it can be dropped instead of costing one more ASS event.
+    out.blank = ch.type != ARIBCC_CHARTYPE_DRCS && !underlined && (cp == 0x20 || cp == 0x3000);
+    out.style = std::move(style);
+    out.glyph = std::move(glyph);
+    out.text  = out.style + out.glyph;
 }
 
 struct ASSEvent
@@ -1047,7 +1090,7 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
                     vr.cellHeight = AribSectionHeight(ch);
                     vr.isVertical = true;
                     vr.backColor  = ch.back_color;
-                    vr.text       = BuildASSSingleCharText(caption, ch, settings);
+                    BuildASSCharParts(caption, ch, settings, vr);
                     if (!vr.text.empty())
                         regions.push_back(vr);
                 }
@@ -1070,7 +1113,7 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
                 cr.cellHeight = AribSectionHeight(ch);
                 cr.isRuby     = region.is_ruby;
                 cr.backColor  = ch.back_color;
-                cr.text       = BuildASSSingleCharText(caption, ch, settings);
+                BuildASSCharParts(caption, ch, settings, cr);
                 if (!cr.text.empty())
                     regions.push_back(cr);
             }
@@ -1090,7 +1133,7 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
                 cr.cellHeight = AribSectionHeight(ch);
                 cr.isRuby     = region.is_ruby;
                 cr.backColor  = ch.back_color;
-                cr.text       = BuildASSSingleCharText(caption, ch, settings);
+                BuildASSCharParts(caption, ch, settings, cr);
                 if (!cr.text.empty())
                     regions.push_back(cr);
             }
@@ -1240,14 +1283,63 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
         flushRubyRun();
     }
 
-    for (const auto &region : regions)
+    // Emit text. Consecutive cells that share a style and advance by a constant
+    // whole em are emitted as one ASS event with \fsp for the extra tracking, so
+    // a caption costs a handful of events instead of one per cell. A renderer
+    // that composites a frame while the batch is still arriving then has far less
+    // of the caption missing, and the ARIB cell grid is still what places every
+    // glyph. Cells whose advance depends on font metrics stay on their own.
+    for (size_t ri = 0; ri < regions.size();)
     {
-        std::string payload = BuildASSPositionTag(caption, region.textX, region.textY);
+        const AribASSRegion &head = regions[ri];
+        if (head.blank)
+        {
+            ri++;
+            continue;
+        }
+
+        size_t runEnd = ri + 1;
+        int spacing = 0;
+        // Cell advances are plane coordinates; the font size is in ASS units.
+        const double planeToASS = CaptionPlaneToASSScale(caption);
+        if (head.mergeable && !head.isVertical)
+        {
+            double step = 0.0;
+            for (; runEnd < regions.size(); runEnd++)
+            {
+                const AribASSRegion &next = regions[runEnd];
+                if (next.blank || !next.mergeable || next.isVertical ||
+                    next.isRuby != head.isRuby || next.y != head.y ||
+                    std::abs(next.textY - head.textY) >= 0.5 ||
+                    next.style != head.style)
+                    break;
+                double advance = (next.textX - regions[runEnd - 1].textX) * planeToASS;
+                // One em is the glyph's own advance; the rest is tracking, which
+                // has to be identical for every cell of the run and cannot be
+                // negative without pulling glyphs on top of each other.
+                if (advance < head.assFs || (runEnd > ri + 1 && std::abs(advance - step) >= 0.5))
+                    break;
+                step = advance;
+            }
+            if (runEnd > ri + 1)
+                spacing = (int)std::lround(step) - head.assFs;
+        }
+
+        std::string payload = BuildASSPositionTag(caption, head.textX, head.textY);
         payload += fontTag;
         payload += captionAlphaTag;
         payload += outlineTag;
-        payload += region.text;
+        if (runEnd > ri + 1 && spacing != 0)
+        {
+            char b[32];
+            snprintf(b, sizeof(b), "{\\fsp%d}", spacing);
+            payload += b;
+        }
+        payload += head.style;
+        for (size_t ci = ri; ci < runEnd; ci++)
+            payload += regions[ci].glyph;
         results.push_back({1, std::move(payload)});
+        ri = runEnd;
     }
 
     // Fallback: if no regions produced output, use plain text representation.
@@ -2921,19 +3013,26 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                         // Read INI settings (caption or superimpose).
                         AribCaptionSettings captionSettings = GetAribCaptionSettings(isSuperimpose);
 
-                        // Compute stop time, then apply delay offset.
+                        // Apply the delay offset, keep clear of anything already
+                        // committed for this stream, then compute the stop time.
+                        REFERENCE_TIME delayHns = (REFERENCE_TIME)captionSettings.delayMs * 10000LL;
+                        pPacket->rtStart += delayHns;
+
+                        // The previous caption may already be delivered past this
+                        // event's start. Defer to the end of that interval instead
+                        // of drawing both captions on top of each other.
+                        auto committed = m_aribPendingPackets.find(pendingKey);
+                        if (committed != m_aribPendingPackets.end() && committed->second &&
+                            committed->second->rtStart > pPacket->rtStart)
+                            pPacket->rtStart = committed->second->rtStart;
+
                         REFERENCE_TIME rtNewStop;
-                        constexpr REFERENCE_TIME kIndefiniteChunk = 250LL * 10000LL; // bounded lookahead: 250ms
                         bool hasExplicitStop =
                             caption.wait_duration != ARIBCC_DURATION_INDEFINITE && caption.wait_duration > 0;
                         if (hasExplicitStop)
                             rtNewStop = pPacket->rtStart + caption.wait_duration * 10000LL;
                         else
-                            rtNewStop = pPacket->rtStart + kIndefiniteChunk;
-
-                        REFERENCE_TIME delayHns = (REFERENCE_TIME)captionSettings.delayMs * 10000LL;
-                        pPacket->rtStart += delayHns;
-                        rtNewStop        += delayHns;
+                            rtNewStop = pPacket->rtStart + kAribCaptionChunk;
 
                         ARIB_LOG("[ARIB] caption timing flags=0x%x wait=%lld start=%lld stop=%lld delay=%dms\n",
                                  (unsigned)caption.flags, (long long)caption.wait_duration,
