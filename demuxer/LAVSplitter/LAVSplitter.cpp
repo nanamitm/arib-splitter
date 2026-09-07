@@ -919,14 +919,20 @@ HRESULT CLAVSplitter::DeliverPacket(Packet *pPacket)
 
     if (pPacket->rtStart != Packet::INVALID_TIME)
     {
-        m_rtCurrent = pPacket->rtStop;
+        // A subtitle event can be committed ahead of the media it belongs to, so
+        // it is neither the current position nor evidence that the segment is
+        // over. Drop it past the stop time and let the A/V streams end the
+        // segment when they get there.
+        const bool bTracksPosition = !pPin->IsSubtitlePin();
+        if (bTracksPosition)
+            m_rtCurrent = pPacket->rtStop;
 
         if (m_bStopValid && m_rtStop && pPacket->rtStart > m_rtStop)
         {
             DbgLog((LOG_TRACE, 10, L"::DeliverPacket(): Reached the designated stop time of %I64d at %I64d", m_rtStop,
                     pPacket->rtStart));
             delete pPacket;
-            return E_FAIL;
+            return bTracksPosition ? E_FAIL : S_FALSE;
         }
 
         pPacket->rtStart -= m_rtStart;
