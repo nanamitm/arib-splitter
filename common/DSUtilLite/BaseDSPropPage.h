@@ -23,6 +23,9 @@ class CBaseDSPropPage : public CBasePropertyPage
 {
   public:
     CBaseDSPropPage(LPCTSTR pName, __inout_opt LPUNKNOWN pUnk, int DialogId, int TitleId);
+    ~CBaseDSPropPage() override;
+    STDMETHODIMP Activate(HWND hwndParent, LPCRECT pRect, BOOL fModal) override;
+    STDMETHODIMP Deactivate() override;
 
   public:
     static HRESULT ShowPropPageDialog(IBaseFilter *pFilter, HWND hwndOwner = nullptr);
@@ -37,5 +40,9 @@ class CBaseDSPropPage : public CBasePropertyPage
     HWND createHintWindow(HWND parent, int timePop = 1700, int timeInit = 70, int timeReshow = 7);
 
   private:
+    void ApplyTheme();
+    static LRESULT CALLBACK ThemeObserverProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
+                                              UINT_PTR id, DWORD_PTR data);
+    HWND m_hThemeObserver = nullptr;
     HWND m_hHint = 0;
 };

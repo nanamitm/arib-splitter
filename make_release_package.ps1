@@ -117,6 +117,12 @@ foreach ($file in $rootFiles) {
 
 Copy-Item -LiteralPath $iniSrc -Destination (Join-Path $packageDir "ARIBSplitter.ini")
 
+$licenseDir = Join-Path $packageDir "licenses\darkmodelib"
+New-Item -ItemType Directory -Force -Path $licenseDir | Out-Null
+Copy-Item -Path (Join-Path $repoRoot "thirdparty\darkmodelib\LICENSE*.md") -Destination $licenseDir
+Copy-Item -LiteralPath (Join-Path $repoRoot "thirdparty\darkmodelib\ARIBSplitter.md") -Destination $licenseDir
+Copy-Item -Path (Join-Path $repoRoot "thirdparty\darkmodelib\docs\LICENSE*.md") -Destination $licenseDir
+
 $manifest = @(
     "ARIBSplitter release package",
     "Version: $Version",

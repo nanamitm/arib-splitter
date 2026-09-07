@@ -214,5 +214,16 @@ ASS output so that vertical-layout captions appear at their correct coordinates.
 
 ## Notes
 
+### Property page theme
+
+Splitter and Audio Decoder property pages follow the Windows app light/dark
+setting, including changes while a page is open. High contrast uses the system
+colors. The host application controls the outer title bar, tab strip, dialog
+buttons and Pin Info page.
+
+Theme support uses the bundled darkmodelib (MPL-2.0/MIT); see
+`thirdparty/darkmodelib/ARIBSplitter.md` and the license files in that directory.
+Release packages include these notices under `licenses/darkmodelib`.
+
 ARIBSplitter keeps LAV Filters' original license and upstream structure.  See
 `COPYING` for license details.

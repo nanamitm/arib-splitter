@@ -19,10 +19,77 @@
 
 #include "stdafx.h"
 #include "BaseDSPropPage.h"
+#include "../../thirdparty/darkmodelib/include/Darkmodelib.h"
 
 CBaseDSPropPage::CBaseDSPropPage(LPCTSTR pName, __inout_opt LPUNKNOWN pUnk, int DialogId, int TitleId)
     : CBasePropertyPage(pName, pUnk, DialogId, TitleId)
 {
+}
+
+CBaseDSPropPage::~CBaseDSPropPage()
+{
+    if (m_hThemeObserver)
+        DestroyWindow(m_hThemeObserver);
+}
+
+STDMETHODIMP CBaseDSPropPage::Activate(HWND hwndParent, LPCRECT pRect, BOOL fModal)
+{
+    dmlib::initDarkMode();
+    // Refresh even when the system changed theme while all pages were closed.
+    dmlib::handleSettingChange(reinterpret_cast<LPARAM>(L"ImmersiveColorSet"));
+    HRESULT hr = __super::Activate(hwndParent, pRect, fModal);
+    if (SUCCEEDED(hr))
+    {
+        ApplyTheme();
+        // Broadcasts do not reach child pages. Use our own invisible top-level
+        // window so no subclass remains attached to the host when the DLL unloads.
+        m_hThemeObserver = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"STATIC", L"",
+                                          WS_POPUP, 0, 0, 0, 0, nullptr, nullptr, g_hInst, nullptr);
+        if (m_hThemeObserver)
+            SetWindowSubclass(m_hThemeObserver, ThemeObserverProc, 1, reinterpret_cast<DWORD_PTR>(this));
+    }
+    return hr;
+}
+
+STDMETHODIMP CBaseDSPropPage::Deactivate()
+{
+    if (m_hThemeObserver)
+    {
+        DestroyWindow(m_hThemeObserver);
+        m_hThemeObserver = nullptr;
+    }
+    const HRESULT hr = __super::Deactivate();
+    if (SUCCEEDED(hr))
+        m_hHint = nullptr; // The tooltip is owned by the destroyed page.
+    return hr;
+}
+
+void CBaseDSPropPage::ApplyTheme()
+{
+    // Match MPCVideoDec's child-page integration; the host owns the outer frame.
+    dmlib::setWindowEraseBgSubclass(m_Dlg);
+    dmlib::setWindowCtlColorSubclass(m_Dlg);
+    dmlib::setChildCtrlsSubclassAndTheme(m_Dlg);
+    dmlib::setWindowNotifyCustomDrawSubclass(m_Dlg);
+    if (m_hHint)
+        dmlib::setDarkTooltips(m_hHint, 0);
+    RedrawWindow(m_Dlg, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
+}
+
+LRESULT CALLBACK CBaseDSPropPage::ThemeObserverProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
+                                                  UINT_PTR id, DWORD_PTR data)
+{
+    auto *page = reinterpret_cast<CBaseDSPropPage *>(data);
+    if (msg == WM_SETTINGCHANGE || msg == WM_SYSCOLORCHANGE)
+    {
+        // High contrast changes may use a null section or Accessibility instead
+        // of ImmersiveColorSet. Always refresh the library's system preference.
+        if (dmlib::handleSettingChange(reinterpret_cast<LPARAM>(L"ImmersiveColorSet")))
+            page->ApplyTheme();
+    }
+    else if (msg == WM_NCDESTROY)
+        RemoveWindowSubclass(hwnd, ThemeObserverProc, id);
+    return DefSubclassProc(hwnd, msg, wParam, lParam);
 }
 
 HWND CBaseDSPropPage::createHintWindow(HWND parent, int timePop, int timeInit, int timeReshow)
@@ -35,6 +102,7 @@ HWND CBaseDSPropPage::createHintWindow(HWND parent, int timePop, int timeInit, i
     SendMessage(hhint, TTM_SETDELAYTIME, TTDT_INITIAL, MAKELONG(timeInit, 0));
     SendMessage(hhint, TTM_SETDELAYTIME, TTDT_RESHOW, MAKELONG(timeReshow, 0));
     SendMessage(hhint, TTM_SETMAXTIPWIDTH, 0, 470);
+    dmlib::setDarkTooltips(hhint, 0);
     return hhint;
 }
 

@@ -28,6 +28,8 @@ try {
     $audioObjects = Get-ChildItem bin_x64\LAVAudio\*.obj | ForEach-Object FullName
     Invoke-Checked 'cl.exe' ($common + @('/Idecoder\LAVAudio') + $includes + @('tests\audio_tests.cpp', '/Fo:work\audio_tests.obj', '/Fe:bin_x64\audio_tests.exe') + $link + @('swresample-lav.lib') + $audioObjects)
     Invoke-Checked '.\bin_x64\audio_tests.exe' @((Join-Path $repoRoot 'bin_x64\ARIBAudio.ax'))
+    Invoke-Checked 'cl.exe' ($common + @('tests\property_page_tests.cpp', '/Fo:work\property_page_tests.obj', '/Fe:bin_x64\property_page_tests.exe'))
+    Invoke-Checked '.\bin_x64\property_page_tests.exe' @((Join-Path $repoRoot 'bin_x64'))
 } finally {
     Pop-Location
 }
