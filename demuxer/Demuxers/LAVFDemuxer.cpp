@@ -1192,6 +1192,13 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
         fontTag = "{\\fn" + settings.fontName + "}";
 
     std::vector<ASSEvent> results;
+    // Background rects are collected here and appended after the text. One
+    // caption is delivered as a batch of samples, and a renderer that composites
+    // a frame while the batch is still arriving draws the part that has reached
+    // it. Sending the text first makes that frame show the caption without part
+    // of its box, instead of the box with the caption missing. The box is Layer 0
+    // and the text Layer 1, so it still paints underneath either way.
+    std::vector<ASSEvent> backgrounds;
     // Emit a Layer 0 background rect using the ARIB cell width.
     // When backgroundPadding is true the rect spans the full ARIB cell (y .. y+cellHeight),
     // giving equal top/bottom padding from the row spacing; otherwise it covers the glyph only.
@@ -1230,7 +1237,7 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
             "{\\an7\\pos(0,0)\\p1\\1c&H%02X%02X%02X&\\1a&H%02X&}"
             "m %d %d l %d %d %d %d %d %d{\\p0}",
             b, g, rv, assAlpha, x1, y1, x2, y1, x2, y2, x1, y2);
-        results.push_back({0, std::string(buf)});
+        backgrounds.push_back({0, std::string(buf)});
     };
 
     bool hasBackgroundRun = false;
@@ -1370,6 +1377,9 @@ static std::vector<ASSEvent> BuildASSFromCaption(const aribcc_caption_t &caption
         results.push_back({1, std::move(payload)});
         ri = runEnd;
     }
+
+    results.insert(results.end(), std::make_move_iterator(backgrounds.begin()),
+                   std::make_move_iterator(backgrounds.end()));
 
     // Fallback: if no regions produced output, use plain text representation.
     if (results.empty() && caption.text && caption.text[0] != '\0')
