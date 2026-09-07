@@ -322,20 +322,28 @@ CLAVFDemuxer::~CLAVFDemuxer()
     CleanupAribDecoders();
 }
 
-// Drop caption packets that are waiting for their stop time, plus the per-region
-// packets queued behind them. Used on seek and whenever the subtitle selection
-// changes, so packets addressed to the previous pin are not delivered late.
-void CLAVFDemuxer::FlushAribPendingPackets()
+// Drop the caption that is waiting for its stop time. Leaves the queue of
+// packets that are already built and addressed alone, so a caller that only
+// needs to forget the pending caption cannot truncate one that is mid-delivery.
+void CLAVFDemuxer::DropAribPendingCaption()
 {
     for (auto &kv : m_aribPendingPackets)
         delete kv.second;
     m_aribPendingPackets.clear();
     m_aribPendingDelay.clear();
-    m_aribLatestAVTime = 0;
     for (auto &kv : m_aribPendingExtras)
         for (auto *p : kv.second)
             delete p;
     m_aribPendingExtras.clear();
+}
+
+// The above plus everything queued for output. Used on seek and whenever the
+// subtitle selection changes, so packets addressed to the previous pin, or to
+// the previous position on the timeline, are not delivered late.
+void CLAVFDemuxer::FlushAribPendingPackets()
+{
+    DropAribPendingCaption();
+    m_aribLatestAVTime = 0;
     for (auto *p : m_aribRegionQueue)
         delete p;
     m_aribRegionQueue.clear();
@@ -2825,7 +2833,11 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                          pkt.stream_index, stream->id, stream->codecpar->profile, m_LateAribSubtitleStream);
                 m_LateAribSubtitleStream = pkt.stream_index;
                 m_LateAribSubtitleIsSuperimpose = isSuperimpose;
-                FlushAribPendingPackets();
+                // The caption held for the old binding no longer applies, but
+                // events already built from it are addressed to this same pin and
+                // carry valid times. Dropping them here would cut a caption that
+                // is halfway through delivery.
+                DropAribPendingCaption();
             }
 
             if (m_LateAribSubtitleStream != pkt.stream_index ||

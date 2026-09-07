@@ -200,6 +200,7 @@ class CLAVFDemuxer
     STDMETHODIMP CombineMVCBaseExtension(Packet *pBasePacket);
 
     void CleanupAribDecoders();
+    void DropAribPendingCaption();
     void FlushAribPendingPackets();
     void QueueAribPendingPackets(REFERENCE_TIME watermark, bool eof);
     aribcc_decoder_t *GetOrCreateAribDecoder(int streamIndex, bool superimpose);
