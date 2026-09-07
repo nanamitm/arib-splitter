@@ -3328,12 +3328,9 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
             m_aribLatestAVTime = (std::max)(m_aribLatestAVTime, pPacket->rtStop);
             QueueAribPendingPackets(watermark, false);
         }
-        if (!m_aribRegionQueue.empty())
-        {
-            m_aribRegionQueue.push_back(pPacket);
-            pPacket = m_aribRegionQueue.front();
-            m_aribRegionQueue.pop_front();
-        }
+        // Whatever was just queued is drained by the next calls, before any
+        // further read. Parking this packet behind it instead would put A/V data
+        // in a queue that the caption paths are free to discard.
     }
     *ppPacket = pPacket;
     return S_OK;
