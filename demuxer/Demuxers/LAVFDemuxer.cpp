@@ -749,10 +749,31 @@ void CLAVFDemuxer::QueueAribPendingPackets(REFERENCE_TIME watermark, bool eof)
             continue;
         }
 
-        // Catch up in whole intervals, so a jump in the A/V clock cannot leave a
-        // hole between the last delivered interval and the current position.
+        // A forward jump in the A/V clock, such as a timestamp discontinuity in a
+        // recording, can leave the caption arbitrarily far behind. Releasing that
+        // span interval by interval would only produce events whose whole lifetime
+        // is already over, so move the caption to the current position instead and
+        // resume from there.
+        const REFERENCE_TIME now = watermark + delay;
+        const REFERENCE_TIME reach = kAribCaptionMaxCatchUp * kAribCaptionChunk;
+        if (now - pending->rtStart > reach)
+        {
+            ARIB_LOG("[ARIB] A/V clock jumped %lldms ahead of the pending caption, resuming at %lld\n",
+                     (long long)((now - pending->rtStart) / 10000), (long long)now);
+            auto resume = [&](Packet *source) {
+                source->rtStart = now;
+                source->rtStop = now + kAribCaptionChunk;
+            };
+            resume(pending);
+            for (Packet *extra : extras)
+                resume(extra);
+        }
+
+        // Catch up in whole intervals, so an ordinary gap between A/V packets
+        // cannot leave a hole between the last delivered interval and the current
+        // position.
         for (int i = 0; i < kAribCaptionMaxCatchUp &&
-                        watermark + delay + kAribCaptionLead >= pending->rtStart;
+                        now + kAribCaptionLead >= pending->rtStart;
              ++i)
             emit(pending->rtStop);
     }

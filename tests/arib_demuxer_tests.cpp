@@ -267,6 +267,21 @@ static void timelineTests(ILAVFSettingsInternal *settings)
         check(events.front().start == 2000000, "the skipped caption leaves the timeline untouched");
     }
     check(noClock.live == 0, "skipped caption ownership");
+    Feed jump{{{0, 0, textPES()},
+               {1, 250, {0, 0, 0, 0}},
+               {1, 500, {0, 0, 0, 0}},
+               {1, 60000, {0, 0, 0, 0}},
+               {1, 60250, {0, 0, 0, 0}}}};
+    {
+        Demuxer d(&lock, settings, jump);
+        auto events = drain(d, jump);
+        check(!events.empty(), "caption survives an A/V clock jump");
+        for (const auto &e : events)
+            check(e.stop <= 10000000 || e.start >= 600000000,
+                  "no interval is released for the span the A/V clock skipped");
+        check(events.back().stop >= 605000000, "the caption resumes at the new position");
+    }
+    check(jump.live == 0, "clock jump ownership");
     Feed longCaption;
     longCaption.samples.push_back({0, 0, textPES()});
     for (int ms = 250; ms <= 60000; ms += 250)
