@@ -28,6 +28,9 @@ static void check(bool ok, const char *message)
     if (!ok)
         throw std::runtime_error(message);
 }
+// A sample with pts == kNoPts is fed without a timestamp, like a PES that
+// arrives right after a seek or at a stream discontinuity.
+static const int64_t kNoPts = INT64_MIN;
 struct Sample
 {
     int stream;
@@ -75,7 +78,7 @@ static int readPacket(AVFormatContext *ctx, AVPacket *pkt)
     pkt->data = data;
     pkt->size = static_cast<int>(s.data.size());
     pkt->stream_index = s.stream;
-    pkt->pts = pkt->dts = s.pts;
+    pkt->pts = pkt->dts = (s.pts == kNoPts) ? AV_NOPTS_VALUE : s.pts;
     pkt->duration = s.stream == 1 ? 20 : 0;
     return 0;
 }
@@ -246,6 +249,24 @@ static void timelineTests(ILAVFSettingsInternal *settings)
         check(drain(d, reset).empty(), "seek/selection flush drops old captions");
     }
     check(reset.live == 0, "flush ownership");
+    Feed noPts{{{1, 100, {0, 0, 0, 0}}, {0, kNoPts, textPES()}, {1, 400, {0, 0, 0, 0}}}};
+    {
+        Demuxer d(&lock, settings, noPts);
+        auto events = drain(d, noPts);
+        check(!events.empty(), "caption without a timestamp still reaches the timeline");
+        check(events.front().start == 1200000, "caption without a timestamp starts at the A/V position");
+        for (const auto &e : events)
+            check(e.start >= 0 && e.stop > e.start, "no INVALID_TIME arithmetic leaks into the events");
+    }
+    check(noPts.live == 0, "timestamp-less caption ownership");
+    Feed noClock{{{0, kNoPts, textPES()}, {0, 200, textPES()}, {1, 600, {0, 0, 0, 0}}}};
+    {
+        Demuxer d(&lock, settings, noClock);
+        auto events = drain(d, noClock);
+        check(!events.empty(), "a later caption still works after a skipped one");
+        check(events.front().start == 2000000, "the skipped caption leaves the timeline untouched");
+    }
+    check(noClock.live == 0, "skipped caption ownership");
     Feed longCaption;
     longCaption.samples.push_back({0, 0, textPES()});
     for (int ms = 250; ms <= 60000; ms += 250)

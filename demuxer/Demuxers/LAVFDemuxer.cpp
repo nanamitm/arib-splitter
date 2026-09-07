@@ -3012,6 +3012,27 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
 
                     if (status == ARIBCC_DECODE_STATUS_GOT_CAPTION)
                     {
+                        // Everything below places this caption on the timeline, so
+                        // it needs a timestamp. A caption PES can arrive without one
+                        // after a seek or at a stream discontinuity; the A/V position
+                        // is then the only sane place to put it. Without that either,
+                        // keep what is on screen instead of feeding INVALID_TIME into
+                        // the arithmetic, which would drop the pending caption and
+                        // leave the stream stuck at a nonsense timestamp.
+                        if (pPacket->rtStart == Packet::INVALID_TIME)
+                        {
+                            if (m_aribLatestAVTime <= 0)
+                            {
+                                ARIB_LOG("[ARIB] caption without timestamp and without A/V clock, skipped\n");
+                                aribcc_caption_cleanup(&caption);
+                                SAFE_DELETE(pPacket);
+                                return S_FALSE;
+                            }
+                            ARIB_LOG("[ARIB] caption without timestamp, placed at A/V position %lld\n",
+                                     (long long)m_aribLatestAVTime);
+                            pPacket->rtStart = m_aribLatestAVTime;
+                        }
+
                         // Read INI settings (caption or superimpose).
                         AribCaptionSettings captionSettings = GetAribCaptionSettings(isSuperimpose);
 
