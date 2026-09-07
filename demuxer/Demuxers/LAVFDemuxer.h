@@ -202,7 +202,8 @@ class CLAVFDemuxer
     void CleanupAribDecoders();
     void DropAribPendingCaption();
     void FlushAribPendingPackets();
-    void QueueAribPendingPackets(REFERENCE_TIME watermark, bool eof);
+    Packet *ResendAribPendingCaption(int pendingKey, REFERENCE_TIME now);
+    void DrainAribPendingCaptions(REFERENCE_TIME endTime);
     aribcc_decoder_t *GetOrCreateAribDecoder(int streamIndex, bool superimpose);
     bool IsLateAribPlaceholderSelected() const;
     bool IsLateAribSubtitleActive(int streamIndex) const;

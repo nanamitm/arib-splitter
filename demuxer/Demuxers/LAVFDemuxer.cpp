@@ -700,94 +700,98 @@ static void RenumberASSReadOrder(Packet *packet, LONG readOrder)
 }
 
 
-// Length of one ASS event for a caption with an indefinite duration, and how far
-// ahead of that event's start it is committed to the renderer.
-static constexpr REFERENCE_TIME kAribCaptionChunk = 500LL * 10000LL;
-static constexpr REFERENCE_TIME kAribCaptionLead = 250LL * 10000LL;
-// Upper bound on intervals released in one call, so a jump in the A/V clock
-// cannot spin here.
-static constexpr int kAribCaptionMaxCatchUp = 8;
+// How long an ARIB caption with an indefinite duration is committed for at a
+// time. The pending caption is handed over when the next caption replaces it,
+// when this much of the stream has gone by, or at the end of the file, so one
+// caption normally costs the renderer a single batch of ASS events.
+//
+// Handing a batch over at the end of the interval it covers is deliberate: the
+// splitter reads far ahead of the renderer, so the events still arrive long
+// before they are presented, and re-sending the same caption over and over is
+// what gives a renderer the chance to composite a frame from a batch it has only
+// half received.
+static constexpr REFERENCE_TIME kAribCaptionHold = 10LL * 10000000LL;
 
-// Release one interval of an indefinite caption, retaining it for the next one.
-// The interval is committed kAribCaptionLead before it is needed, so the renderer
-// receives and lays out the next batch of ASS events before the current interval
-// expires. Committing early stays bounded, because what is already delivered can
-// no longer be shortened by a later clear-screen or replacement packet.
-void CLAVFDemuxer::QueueAribPendingPackets(REFERENCE_TIME watermark, bool eof)
+// Hand over the caption that is waiting for its stop time and commit the next
+// interval of it. Called when the stream keeps sending packets that decode to no
+// caption while an indefinite one should stay on screen: without this the caption
+// would end when its committed interval does. Returns the packet to deliver, or
+// nullptr when the interval has not gone by yet.
+Packet *CLAVFDemuxer::ResendAribPendingCaption(int pendingKey, REFERENCE_TIME now)
+{
+    auto it = m_aribPendingPackets.find(pendingKey);
+    if (it == m_aribPendingPackets.end() || !it->second)
+        return nullptr;
+
+    Packet *deliver = it->second;
+    if (now == Packet::INVALID_TIME || deliver->rtStop == Packet::INVALID_TIME ||
+        now < deliver->rtStop)
+        return nullptr;
+
+    // The next interval carries the same payload, so renderers that key events by
+    // ReadOrder see it as a new one.
+    Packet *next = ClonePacket(deliver);
+    if (next)
+    {
+        next->rtStart = deliver->rtStop;
+        next->rtStop = next->rtStart + kAribCaptionHold;
+        RenumberASSReadOrder(next, NextAribReadOrder());
+    }
+    it->second = next;
+
+    auto &extras = m_aribPendingExtras[pendingKey];
+    std::vector<Packet *> nextExtras;
+    for (Packet *extra : extras)
+    {
+        Packet *nextExtra = next ? ClonePacket(extra) : nullptr;
+        if (nextExtra)
+        {
+            nextExtra->rtStart = next->rtStart;
+            nextExtra->rtStop = next->rtStop;
+            RenumberASSReadOrder(nextExtra, NextAribReadOrder());
+            nextExtras.push_back(nextExtra);
+        }
+        m_aribRegionQueue.push_back(extra);
+    }
+    extras.swap(nextExtras);
+    return deliver;
+}
+
+// Hand over whatever is still pending at the end of the stream, so the last
+// caption of a file is not lost. endTime bounds it; a caption-only input may have
+// neither a duration nor an A/V clock, and then the committed stop is all there
+// is to go on.
+void CLAVFDemuxer::DrainAribPendingCaptions(REFERENCE_TIME endTime)
 {
     for (auto &entry : m_aribPendingPackets)
     {
         Packet *pending = entry.second;
-        if (!pending)
-            continue;
+        entry.second = nullptr;
         auto &extras = m_aribPendingExtras[entry.first];
-        const REFERENCE_TIME delay = m_aribPendingDelay[entry.first];
+        REFERENCE_TIME stop =
+            (endTime <= 0) ? (pending ? pending->rtStop : 0) : endTime + m_aribPendingDelay[entry.first];
 
-        auto emit = [&](REFERENCE_TIME stop) {
-            auto release = [&](Packet *source) {
-                Packet *part = ClonePacket(source);
-                if (!part)
-                    return;
-                part->rtStop = stop;
-                RenumberASSReadOrder(part, NextAribReadOrder());
-                m_aribRegionQueue.push_back(part);
-                source->rtStart = stop;
-                source->rtStop = stop + kAribCaptionChunk;
-            };
-            release(pending);
-            for (Packet *extra : extras)
-                release(extra);
-        };
-
-        if (eof)
+        if (pending && stop > pending->rtStart)
         {
-            // A caption-only input may have neither a duration nor an A/V clock.
-            // Still deliver its final caption instead of silently dropping it.
-            REFERENCE_TIME stop = (watermark <= 0) ? pending->rtStop : watermark + delay;
-            if (stop > pending->rtStart)
-                emit(stop);
-            continue;
-        }
-
-        // A forward jump in the A/V clock, such as a timestamp discontinuity in a
-        // recording, can leave the caption arbitrarily far behind. Releasing that
-        // span interval by interval would only produce events whose whole lifetime
-        // is already over, so move the caption to the current position instead and
-        // resume from there.
-        const REFERENCE_TIME now = watermark + delay;
-        const REFERENCE_TIME reach = kAribCaptionMaxCatchUp * kAribCaptionChunk;
-        if (now - pending->rtStart > reach)
-        {
-            ARIB_LOG("[ARIB] A/V clock jumped %lldms ahead of the pending caption, resuming at %lld\n",
-                     (long long)((now - pending->rtStart) / 10000), (long long)now);
-            auto resume = [&](Packet *source) {
-                source->rtStart = now;
-                source->rtStop = now + kAribCaptionChunk;
-            };
-            resume(pending);
+            pending->rtStop = stop;
+            m_aribRegionQueue.push_back(pending);
             for (Packet *extra : extras)
-                resume(extra);
+            {
+                extra->rtStop = stop;
+                m_aribRegionQueue.push_back(extra);
+            }
         }
-
-        // Catch up in whole intervals, so an ordinary gap between A/V packets
-        // cannot leave a hole between the last delivered interval and the current
-        // position.
-        for (int i = 0; i < kAribCaptionMaxCatchUp &&
-                        now + kAribCaptionLead >= pending->rtStart;
-             ++i)
-            emit(pending->rtStop);
-    }
-    if (eof)
-    {
-        for (auto &entry : m_aribPendingPackets)
-            delete entry.second;
-        m_aribPendingPackets.clear();
-        for (auto &entry : m_aribPendingExtras)
-            for (Packet *extra : entry.second)
+        else
+        {
+            delete pending;
+            for (Packet *extra : extras)
                 delete extra;
-        m_aribPendingExtras.clear();
-        m_aribPendingDelay.clear();
+        }
+        extras.clear();
     }
+    m_aribPendingPackets.clear();
+    m_aribPendingExtras.clear();
+    m_aribPendingDelay.clear();
 }
 
 
@@ -2799,7 +2803,7 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
     else if (result == AVERROR_EOF)
     {
         DbgLog((LOG_TRACE, 10, L"::GetNextPacket(): End of File reached"));
-        QueueAribPendingPackets((std::max)(m_aribLatestAVTime, GetDuration()), true);
+        DrainAribPendingCaptions((std::max)(m_aribLatestAVTime, GetDuration()));
         if (!m_aribRegionQueue.empty())
         {
             *ppPacket = m_aribRegionQueue.front();
@@ -3079,18 +3083,9 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                         // Read INI settings (caption or superimpose).
                         AribCaptionSettings captionSettings = GetAribCaptionSettings(isSuperimpose);
 
-                        // Apply the delay offset, keep clear of anything already
-                        // committed for this stream, then compute the stop time.
+                        // Apply the delay offset, then compute the stop time.
                         REFERENCE_TIME delayHns = (REFERENCE_TIME)captionSettings.delayMs * 10000LL;
                         pPacket->rtStart += delayHns;
-
-                        // The previous caption may already be delivered past this
-                        // event's start. Defer to the end of that interval instead
-                        // of drawing both captions on top of each other.
-                        auto committed = m_aribPendingPackets.find(pendingKey);
-                        if (committed != m_aribPendingPackets.end() && committed->second &&
-                            committed->second->rtStart > pPacket->rtStart)
-                            pPacket->rtStart = committed->second->rtStart;
 
                         REFERENCE_TIME rtNewStop;
                         bool hasExplicitStop =
@@ -3098,7 +3093,7 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                         if (hasExplicitStop)
                             rtNewStop = pPacket->rtStart + caption.wait_duration * 10000LL;
                         else
-                            rtNewStop = pPacket->rtStart + kAribCaptionChunk;
+                            rtNewStop = pPacket->rtStart + kAribCaptionHold;
 
                         ARIB_LOG("[ARIB] caption timing flags=0x%x wait=%lld start=%lld stop=%lld delay=%dms\n",
                                  (unsigned)caption.flags, (long long)caption.wait_duration,
@@ -3242,9 +3237,16 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                     }
                     else
                     {
+                        // No caption in this packet. An indefinite one may still be
+                        // waiting for its stop time; hand it over once its interval
+                        // has gone by so it does not end with that interval.
                         aribcc_caption_cleanup(&caption);
+                        Packet *resend = ResendAribPendingCaption(pendingKey, rt);
                         SAFE_DELETE(pPacket);
-                        return S_FALSE;
+                        if (!resend)
+                            return S_FALSE;
+                        pPacket = resend;
+                        pPacket->StreamId = outputStreamId;
                     }
                 }
                 else
@@ -3364,19 +3366,13 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
 
     ParseICYMetadataPacket();
 
-    // A/V packets keep captions moving even when no further caption PES arrives.
+    // Track how far the A/V streams have got, so the caption still pending at the
+    // end of the file can be given a stop time.
     if (pPacket->StreamId == (DWORD)m_dActiveStreams[video] ||
         pPacket->StreamId == (DWORD)m_dActiveStreams[audio])
     {
-        REFERENCE_TIME watermark = pPacket->rtDTS != Packet::INVALID_TIME ? pPacket->rtDTS : pPacket->rtStart;
-        if (watermark != Packet::INVALID_TIME)
-        {
+        if (pPacket->rtStop != Packet::INVALID_TIME)
             m_aribLatestAVTime = (std::max)(m_aribLatestAVTime, pPacket->rtStop);
-            QueueAribPendingPackets(watermark, false);
-        }
-        // Whatever was just queued is drained by the next calls, before any
-        // further read. Parking this packet behind it instead would put A/V data
-        // in a queue that the caption paths are free to discard.
     }
     *ppPacket = pPacket;
     return S_OK;
