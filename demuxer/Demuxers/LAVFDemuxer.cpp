@@ -2240,8 +2240,10 @@ HRESULT CLAVFDemuxer::SetActiveStream(StreamType type, int pid)
         if (pid != m_dActiveStreams[subpic])
             FlushAribPendingPackets();
         if (pid != (int)LATE_ARIB_SUBTITLE_PID)
+        {
             m_LateAribSubtitleStream = -1;
             m_LateAribSubtitleIsSuperimpose = false;
+        }
     }
 
     hr = __super::SetActiveStream(type, pid);
