@@ -3489,6 +3489,7 @@ retry:
                 DbgLog((LOG_ERROR, 1, L" -> attempting byte seek to position 0"));
                 return SeekByte(0, AVSEEK_FLAG_BACKWARD);
             }
+            return E_FAIL;
         }
     }
 
@@ -3519,6 +3520,7 @@ STDMETHODIMP CLAVFDemuxer::SeekByte(int64_t pos, int flags)
     if (ret < 0)
     {
         DbgLog((LOG_ERROR, 1, L"::SeekByte() -- Seek failed"));
+        return E_FAIL;
     }
 
     for (unsigned i = 0; i < m_avFormat->nb_streams; i++)
