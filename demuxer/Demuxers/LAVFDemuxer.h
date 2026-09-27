@@ -261,10 +261,12 @@ class CLAVFDemuxer
     std::map<int, aribcc_context_t *>  m_aribSuperContexts;
     std::map<int, aribcc_decoder_t *>  m_aribSuperDecoders;
 
-    // Pending indefinite captions, keyed by stream index * 2 + caption type.
-    // A/V timestamps release short intervals; a caption event bounds the tail.
+    // Pending captions, keyed by stream index * 2 + caption type.
+    // Explicit durations are held until their deadline or a replacement so
+    // an early clear can shorten them before they are sent downstream.
     std::map<int, Packet *> m_aribPendingPackets;
     std::map<int, REFERENCE_TIME> m_aribPendingDelay;
+    std::map<int, bool> m_aribPendingExplicit;
     REFERENCE_TIME m_aribLatestAVTime = 0;
 
     // Extra region packets (ruby etc.) stored alongside the pending packet.

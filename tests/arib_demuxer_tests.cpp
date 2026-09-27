@@ -220,14 +220,38 @@ static void timelineTests(ILAVFSettingsInternal *settings)
         drain(d, invalid);
     }
     check(invalid.live == 0, "decode failure early returns release 1000 packets");
-    Feed explicitWait{{{0, 100, pes({0x0c, 0x0e, 0x41, 0x9d, 0x20, 0x43})}}};
+    const auto timedPES = pes({0x0c, 0x0e, 0x41, 0x9d, 0x20, 0x43});
+    Feed explicitWait{{{0, 100, timedPES}, {1, 450, {0, 0, 0, 0}}}};
     {
         Demuxer d(&lock, settings, explicitWait);
         auto events = drain(d, explicitWait);
-        check(!events.empty() && events.front().readAt == 1, "explicit duration emits immediately");
+        check(!events.empty() && events.front().readAt == 2, "explicit duration emits at its deadline");
         check(events.front().start == 1000000 && events.front().stop == 4000000, "explicit wait duration preserved");
     }
     check(explicitWait.live == 0, "explicit wait ownership");
+    Feed earlyClear{{{0, 100, timedPES}, {0, 200, pes({0x0c})}, {1, 450, {0, 0, 0, 0}}}};
+    {
+        Demuxer d(&lock, settings, earlyClear);
+        auto events = drain(d, earlyClear);
+        check(!events.empty(), "explicit caption handed over by early clear");
+        for (const auto &e : events)
+            check(e.start == 1000000 && e.stop == 2000000, "early clear truncates explicit duration");
+    }
+    check(earlyClear.live == 0, "early clear ownership");
+    Feed earlyReplacement{{{0, 100, timedPES}, {0, 200, textPES()}, {1, 450, {0, 0, 0, 0}}}};
+    {
+        Demuxer d(&lock, settings, earlyReplacement);
+        auto events = drain(d, earlyReplacement);
+        bool replaced = false;
+        for (const auto &e : events)
+            if (e.start == 1000000)
+            {
+                check(e.stop == 2000000, "early replacement truncates explicit duration");
+                replaced = true;
+            }
+        check(replaced, "explicit caption handed over by early replacement");
+    }
+    check(earlyReplacement.live == 0, "early replacement ownership");
     Feed unknown{{{0, 900, textPES()}}};
     {
         Demuxer d(&lock, settings, unknown);

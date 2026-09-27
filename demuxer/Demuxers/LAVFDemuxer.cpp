@@ -331,6 +331,7 @@ void CLAVFDemuxer::DropAribPendingCaption()
         delete kv.second;
     m_aribPendingPackets.clear();
     m_aribPendingDelay.clear();
+    m_aribPendingExplicit.clear();
     for (auto &kv : m_aribPendingExtras)
         for (auto *p : kv.second)
             delete p;
@@ -728,6 +729,20 @@ Packet *CLAVFDemuxer::ResendAribPendingCaption(int pendingKey, REFERENCE_TIME no
         now < deliver->rtStop)
         return nullptr;
 
+    if (m_aribPendingExplicit.erase(pendingKey))
+    {
+        m_aribPendingPackets.erase(it);
+        m_aribPendingDelay.erase(pendingKey);
+        auto extras = m_aribPendingExtras.find(pendingKey);
+        if (extras != m_aribPendingExtras.end())
+        {
+            for (Packet *extra : extras->second)
+                m_aribRegionQueue.push_back(extra);
+            m_aribPendingExtras.erase(extras);
+        }
+        return deliver;
+    }
+
     // The next interval carries the same payload, so renderers that key events by
     // ReadOrder see it as a new one.
     Packet *next = ClonePacket(deliver);
@@ -770,6 +785,8 @@ void CLAVFDemuxer::DrainAribPendingCaptions(REFERENCE_TIME endTime)
         auto &extras = m_aribPendingExtras[entry.first];
         REFERENCE_TIME stop =
             (endTime <= 0) ? (pending ? pending->rtStop : 0) : endTime + m_aribPendingDelay[entry.first];
+        if (pending && m_aribPendingExplicit.count(entry.first))
+            stop = (std::min)(stop, pending->rtStop);
 
         if (pending && stop > pending->rtStart)
         {
@@ -792,6 +809,7 @@ void CLAVFDemuxer::DrainAribPendingCaptions(REFERENCE_TIME endTime)
     m_aribPendingPackets.clear();
     m_aribPendingExtras.clear();
     m_aribPendingDelay.clear();
+    m_aribPendingExplicit.clear();
 }
 
 
@@ -3119,6 +3137,8 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                             it->second = nullptr;
                             m_aribPendingPackets.erase(it);
                             m_aribPendingDelay.erase(sid);
+                             if (m_aribPendingExplicit.erase(sid))
+                                 stopBound = (std::min)(stopBound, p->rtStop);
                             if (stopBound <= p->rtStart)
                             {
                                 delete p;
@@ -3198,30 +3218,12 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                                 currentExtras.push_back(rPkt);
                             }
 
+                            m_aribPendingPackets[pendingKey] = pPacket;
+                            m_aribPendingDelay[pendingKey] = delayHns;
                             if (hasExplicitStop)
-                            {
-                                Packet *current = pPacket;
-                                pPacket = nullptr;
-                                if (toDeliver)
-                                {
-                                    m_aribRegionQueue.push_back(current);
-                                    for (auto *ep : currentExtras)
-                                        m_aribRegionQueue.push_back(ep);
-                                }
-                                else
-                                {
-                                    pPacket = current;
-                                    for (auto *ep : currentExtras)
-                                        m_aribRegionQueue.push_back(ep);
-                                }
-                            }
-                            else
-                            {
-                                m_aribPendingPackets[pendingKey] = pPacket;
-                                m_aribPendingDelay[pendingKey] = delayHns;
-                                pPacket = nullptr;
-                                extras.swap(currentExtras);
-                            }
+                                m_aribPendingExplicit[pendingKey] = true;
+                            pPacket = nullptr;
+                            extras.swap(currentExtras);
                         }
 
                         if (toDeliver)
@@ -3373,6 +3375,38 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
     {
         if (pPacket->rtStop != Packet::INVALID_TIME)
             m_aribLatestAVTime = (std::max)(m_aribLatestAVTime, pPacket->rtStop);
+
+        // A finite caption can be handed over once A/V reaches its deadline.
+        // Return it before this A/V packet, keeping the original packet queued.
+        for (auto it = m_aribPendingExplicit.begin(); it != m_aribPendingExplicit.end();)
+        {
+            const int key = it->first;
+            auto pending = m_aribPendingPackets.find(key);
+            if (pending == m_aribPendingPackets.end() || !pending->second ||
+                m_aribLatestAVTime < pending->second->rtStop)
+            {
+                ++it;
+                continue;
+            }
+            m_aribRegionQueue.push_back(pending->second);
+            m_aribPendingPackets.erase(pending);
+            m_aribPendingDelay.erase(key);
+            auto extras = m_aribPendingExtras.find(key);
+            if (extras != m_aribPendingExtras.end())
+            {
+                for (Packet *extra : extras->second)
+                    m_aribRegionQueue.push_back(extra);
+                m_aribPendingExtras.erase(extras);
+            }
+            it = m_aribPendingExplicit.erase(it);
+        }
+        if (!m_aribRegionQueue.empty())
+        {
+            m_aribRegionQueue.push_back(pPacket);
+            *ppPacket = m_aribRegionQueue.front();
+            m_aribRegionQueue.pop_front();
+            return S_OK;
+        }
     }
     *ppPacket = pPacket;
     return S_OK;
