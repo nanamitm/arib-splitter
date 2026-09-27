@@ -266,7 +266,7 @@ class CLAVFDemuxer
     // an early clear can shorten them before they are sent downstream.
     std::map<int, Packet *> m_aribPendingPackets;
     std::map<int, REFERENCE_TIME> m_aribPendingDelay;
-    std::map<int, bool> m_aribPendingExplicit;
+    std::set<int> m_aribPendingExplicit;
     REFERENCE_TIME m_aribLatestAVTime = 0;
 
     // Extra region packets (ruby etc.) stored alongside the pending packet.

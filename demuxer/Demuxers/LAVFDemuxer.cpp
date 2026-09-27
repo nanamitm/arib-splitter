@@ -3137,8 +3137,8 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                             it->second = nullptr;
                             m_aribPendingPackets.erase(it);
                             m_aribPendingDelay.erase(sid);
-                             if (m_aribPendingExplicit.erase(sid))
-                                 stopBound = (std::min)(stopBound, p->rtStop);
+                            if (m_aribPendingExplicit.erase(sid))
+                                stopBound = (std::min)(stopBound, p->rtStop);
                             if (stopBound <= p->rtStart)
                             {
                                 delete p;
@@ -3221,7 +3221,7 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                             m_aribPendingPackets[pendingKey] = pPacket;
                             m_aribPendingDelay[pendingKey] = delayHns;
                             if (hasExplicitStop)
-                                m_aribPendingExplicit[pendingKey] = true;
+                                m_aribPendingExplicit.insert(pendingKey);
                             pPacket = nullptr;
                             extras.swap(currentExtras);
                         }
@@ -3380,7 +3380,7 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
         // Return it before this A/V packet, keeping the original packet queued.
         for (auto it = m_aribPendingExplicit.begin(); it != m_aribPendingExplicit.end();)
         {
-            const int key = it->first;
+            const int key = *it;
             auto pending = m_aribPendingPackets.find(key);
             if (pending == m_aribPendingPackets.end() || !pending->second ||
                 m_aribLatestAVTime < pending->second->rtStop)
