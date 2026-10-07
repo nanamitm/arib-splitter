@@ -190,7 +190,7 @@ int CLAVInputPin::Read(void *opaque, uint8_t *buf, int buf_size)
                     pin->m_llPos));
             do
             {
-                hr = pin->m_pAsyncReader->SyncRead(pin->m_llPos, 1, buf + read);
+                hr = pin->m_pAsyncReader->SyncRead(pin->m_llPos + read, 1, buf + read);
             } while (hr == S_OK && (++read) < buf_size);
             DbgLog((LOG_TRACE, 10, L"-> Read %d bytes", read));
         }
@@ -220,7 +220,7 @@ int64_t CLAVInputPin::Seek(void *opaque, int64_t offset, int whence)
     }
     else if (whence == SEEK_END)
     {
-        pin->m_llPos = total - offset;
+        pin->m_llPos = total + offset;
     }
     else if (whence == AVSEEK_SIZE)
     {

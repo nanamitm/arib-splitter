@@ -62,6 +62,7 @@ class CLAVInputPin
     LONGLONG m_llPos = 0;
 
   private:
+    friend struct InputPinTest;
     IAsyncReader *m_pAsyncReader = nullptr;
     AVIOContext *m_pAVIOContext = nullptr;
 

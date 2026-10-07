@@ -25,6 +25,8 @@ try {
     $splitterObjects = Get-ChildItem bin_x64\LAVSplitter\*.obj | Where-Object Name -ne 'dllmain.obj' | ForEach-Object FullName
     Invoke-Checked 'cl.exe' ($common + @('/Idemuxer\LAVSplitter', '/Idemuxer\Demuxers') + $includes + @('tests\registry_tests.cpp', '/Fo:work\registry_tests.obj', '/Fe:bin_x64\registry_tests.exe') + $link + @('demuxers.lib') + $splitterObjects)
     Invoke-Checked '.\bin_x64\registry_tests.exe' @()
+    Invoke-Checked 'cl.exe' ($common + @('/Idemuxer\LAVSplitter', '/Idemuxer\Demuxers') + $includes + @('tests\splitter_tests.cpp', '/Fo:work\splitter_tests.obj', '/Fe:bin_x64\splitter_tests.exe') + $link + @('demuxers.lib') + $splitterObjects)
+    Invoke-Checked '.\bin_x64\splitter_tests.exe' @()
     $audioObjects = Get-ChildItem bin_x64\LAVAudio\*.obj | ForEach-Object FullName
     Invoke-Checked 'cl.exe' ($common + @('/Idecoder\LAVAudio') + $includes + @('tests\audio_tests.cpp', '/Fo:work\audio_tests.obj', '/Fe:bin_x64\audio_tests.exe') + $link + @('swresample-lav.lib') + $audioObjects)
     Invoke-Checked '.\bin_x64\audio_tests.exe' @((Join-Path $repoRoot 'bin_x64\ARIBAudio.ax'))
