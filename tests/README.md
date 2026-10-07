@@ -26,7 +26,8 @@ against the production objects, and fails on the first failing test. Use
 - `splitter_tests.cpp` exercises production input callbacks with a deterministic
   `IAsyncReader`: complete/partial reads, unavailable length, EOF, and signed
   end-relative seeks. It runs the demux worker to verify seek failure propagation,
-  position rollback, blocked packet delivery, retry, and recovery. PCM tests check
+  position rollback, blocked packet delivery, retry, and recovery, and that an
+  unseekable source reports the failure but keeps playing its previous segment. PCM tests check
   mono passthrough and multi-channel interleaving while counting input-buffer
   releases over 3,000 packets.
 

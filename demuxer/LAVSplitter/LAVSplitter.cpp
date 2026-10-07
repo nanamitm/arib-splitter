@@ -797,7 +797,7 @@ DWORD CLAVSplitter::ThreadProc()
             seekResult = hr == S_OK ? m_pDemuxer->Reset() : DemuxSeek(m_rtNewStart);
         }
 
-        if (FAILED(seekResult))
+        if (FAILED(seekResult) && m_pDemuxer->IsSeekable())
         {
             if (cmd != (DWORD)-1)
                 Reply(seekResult);
@@ -810,10 +810,23 @@ DWORD CLAVSplitter::ThreadProc()
             continue;
         }
 
-        m_rtStart = m_rtNewStart;
-        m_rtStop = m_rtNewStop;
-        if (cmd != (DWORD)-1)
-            Reply(S_OK);
+        if (FAILED(seekResult) && cmd == CMD_SEEK)
+        {
+            // An unseekable source (live or piped input) is still where it was.
+            // Report the failure, and keep reading under the previous segment,
+            // which still describes the packets that follow.
+            DbgLog((LOG_TRACE, 10, L"::ThreadProc(): seek failed on unseekable source, continuing"));
+            Reply(seekResult);
+        }
+        else
+        {
+            // Startup and restart on an unseekable source also continue from the
+            // current read position, as they did before seek failures were checked.
+            m_rtStart = m_rtNewStart;
+            m_rtStop = m_rtNewStop;
+            if (cmd != (DWORD)-1)
+                Reply(S_OK);
+        }
 
         // Wait for the end of any flush
         m_eEndFlush.Wait();
@@ -1302,8 +1315,9 @@ STDMETHODIMP CLAVSplitter::SetPositionsInternal(void *caller, LONGLONG *pCurrent
             m_rtNewStart = previousNewStart;
             m_rtNewStop = previousNewStop;
             m_bStopValid = previousStopValid;
-            // The worker is halted and the demuxer's actual position is unknown.
-            // Even the last successful target now needs a real recovery seek.
+            // The worker either halted with the demuxer's position unknown, or kept
+            // reading an unseekable source. Either way no target is known to be
+            // current, so even the last successful one needs a real seek.
             m_rtLastStart = m_rtLastStop = _I64_MIN;
             m_LastSeekers.clear();
         }

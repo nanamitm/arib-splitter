@@ -121,6 +121,7 @@ static void inputTests(CLAVSplitter &filter)
 struct SeekDemuxer : CBaseDemuxer
 {
     std::atomic<HRESULT> seekResult{S_OK};
+    bool seekable = true;
     std::atomic<int> seeks{0}, reads{0};
     CAMEvent readDone{TRUE};
     explicit SeekDemuxer(CCritSec *lock) : CBaseDemuxer(NAME("seek test"), lock) {}
@@ -139,6 +140,7 @@ struct SeekDemuxer : CBaseDemuxer
         return seekResult.load();
     }
     STDMETHODIMP Reset() override { return S_OK; }
+    bool IsSeekable() const override { return seekable; }
     const char *GetContainerFormat() const override { return "mpegts"; }
     const stream *SelectVideoStream() override { return nullptr; }
     const stream *SelectAudioStream(std::list<std::string>) override { return nullptr; }
@@ -212,6 +214,41 @@ static void seekTests()
     check(demuxer->readDone.Wait(5000), "recovery seek resumes packet reading");
     check(filter.retained(current, stop, TRUE), "recovery seek updates segment state");
     puts("PASS: worker seek result, state rollback, halted delivery, failure retry, recovery");
+}
+
+static void unseekableSeekTests()
+{
+    HRESULT hr = S_OK;
+    SplitterTest filter(&hr);
+    check(SUCCEEDED(hr), "construct unseekable test splitter");
+    auto *demuxer = new SeekDemuxer(&filter);
+    demuxer->seekable = false;
+    filter.start(demuxer);
+    check(demuxer->readDone.Wait(5000), "unseekable initial read finishes");
+    demuxer->readDone.Reset();
+    LONGLONG current = 10000000, stop = 90000000;
+    check(filter.SetPositions(&current, AM_SEEKING_AbsolutePositioning, &stop, AM_SEEKING_AbsolutePositioning) == S_OK,
+          "unseekable source accepts a seek that succeeds");
+    filter.wait();
+    check(demuxer->readDone.Wait(5000), "unseekable source reads after successful seek");
+    demuxer->readDone.Reset();
+    demuxer->seekResult = E_FAIL;
+    const int reads = demuxer->reads;
+    current = 20000000;
+    stop = 80000000;
+    check(filter.SetPositions(&current, AM_SEEKING_AbsolutePositioning, &stop, AM_SEEKING_AbsolutePositioning) ==
+              E_FAIL,
+          "unseekable seek failure reaches IMediaSeeking caller");
+    filter.wait();
+    check(filter.retained(10000000, 90000000, TRUE), "unseekable failure keeps the previous segment");
+    check(demuxer->readDone.Wait(5000) && demuxer->reads > reads, "unseekable failure keeps playback running");
+    const int seeks = demuxer->seeks;
+    check(filter.SetPositions(&current, AM_SEEKING_AbsolutePositioning, &stop, AM_SEEKING_AbsolutePositioning) ==
+              E_FAIL,
+          "failed unseekable target is not cached as a success");
+    filter.wait();
+    check(demuxer->seeks == seeks + 1, "failed unseekable seek is retried");
+    puts("PASS: unseekable seek failure reported, previous segment kept, playback continues");
 }
 
 struct ParserPinTest : CLAVOutputPin
@@ -304,6 +341,7 @@ int main()
         filter.SetRuntimeConfig(TRUE);
         inputTests(filter);
         seekTests();
+        unseekableSeekTests();
         pcmTests(filter);
         puts("ALL SPLITTER TESTS PASSED");
     }

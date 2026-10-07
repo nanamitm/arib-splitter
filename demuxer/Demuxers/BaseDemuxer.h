@@ -108,6 +108,9 @@ class CBaseDemuxer : public CUnknown
 #define LAVFMT_TS_DISCONT 0x0001
 #define LAVFMT_TS_DISCONT_NO_DOWNSTREAM 0x0002
     virtual DWORD GetContainerFlags() { return 0; }
+    // Whether a failed seek leaves the read position unknown. A source that
+    // cannot seek keeps reading where it is, so a failed seek is not fatal.
+    virtual bool IsSeekable() const { return true; }
     // Select the active title
     virtual STDMETHODIMP SetTitle(int idx) { return E_NOTIMPL; }
     // Query the active title

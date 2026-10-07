@@ -81,6 +81,7 @@ class CLAVFDemuxer
     STDMETHODIMP Reset();
     const char *GetContainerFormat() const;
     virtual DWORD GetContainerFlags() { return m_bTSDiscont ? LAVFMT_TS_DISCONT : 0; }
+    virtual bool IsSeekable() const { return !m_avFormat || !m_avFormat->pb || m_avFormat->pb->seekable; }
 
     STDMETHODIMP SetTitle(int idx);
     STDMETHODIMP_(int) GetTitle();
@@ -268,9 +269,9 @@ class CLAVFDemuxer
     std::map<int, REFERENCE_TIME> m_aribPendingDelay;
     std::set<int> m_aribPendingExplicit;
     REFERENCE_TIME m_aribLatestAVTime = 0;
-
     // Largest amount the A/V read position has led a caption PES, per pending key.
     std::map<int, REFERENCE_TIME> m_aribCaptionLead;
+
     // Extra region packets (ruby etc.) stored alongside the pending packet.
     // Released and rtStop-corrected together with the primary pending packet.
     std::map<int, std::vector<Packet *>> m_aribPendingExtras;
