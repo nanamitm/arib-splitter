@@ -281,6 +281,7 @@ class __declspec(uuid("1AA767C2-BF31-4791-B65A-474678685956")) CLAVSplitter
     CLAVInputPin *m_pInput;
 
   private:
+    friend struct SplitterTest;
     CCritSec m_csPins;
     std::vector<CLAVOutputPin *> m_pPins;
     std::vector<CLAVOutputPin *> m_pActivePins;

@@ -786,22 +786,32 @@ DWORD CLAVSplitter::ThreadProc()
 
         m_ePlaybackInit.Reset();
 
-        m_rtStart = m_rtNewStart;
-        m_rtStop = m_rtNewStop;
-
-        if (m_bPlaybackStarted || m_rtStart != 0 || cmd == CMD_SEEK)
+        HRESULT seekResult = S_OK;
+        if (m_bPlaybackStarted || m_rtNewStart != 0 || cmd == CMD_SEEK)
         {
             HRESULT hr = S_FALSE;
             if (m_pInput)
             {
-                hr = m_pInput->SeekStream(m_rtStart);
-                if (SUCCEEDED(hr))
-                    m_pDemuxer->Reset();
+                hr = m_pInput->SeekStream(m_rtNewStart);
             }
-            if (hr != S_OK)
-                DemuxSeek(m_rtStart);
+            seekResult = hr == S_OK ? m_pDemuxer->Reset() : DemuxSeek(m_rtNewStart);
         }
 
+        if (FAILED(seekResult))
+        {
+            if (cmd != (DWORD)-1)
+                Reply(seekResult);
+            m_eEndFlush.Wait();
+            m_ePlaybackInit.Set();
+            // The demuxer may have moved while attempting the failed seek.
+            // Do not label those packets with the requested segment. Wait for
+            // a new seek or exit, and tell the graph that playback cannot resume.
+            NotifyEvent(EC_ERRORABORT, seekResult, 0);
+            continue;
+        }
+
+        m_rtStart = m_rtNewStart;
+        m_rtStop = m_rtNewStop;
         if (cmd != (DWORD)-1)
             Reply(S_OK);
 
@@ -1236,6 +1246,10 @@ STDMETHODIMP CLAVSplitter::SetPositionsInternal(void *caller, LONGLONG *pCurrent
 
     REFERENCE_TIME
     rtCurrent = m_rtCurrent, rtStop = m_rtStop;
+    const REFERENCE_TIME previousCurrent = m_rtCurrent;
+    const REFERENCE_TIME previousNewStart = m_rtNewStart;
+    const REFERENCE_TIME previousNewStop = m_rtNewStop;
+    const BOOL previousStopValid = m_bStopValid;
 
     if (pCurrent)
     {
@@ -1274,11 +1288,6 @@ STDMETHODIMP CLAVSplitter::SetPositionsInternal(void *caller, LONGLONG *pCurrent
         return S_OK;
     }
 
-    m_rtLastStart = rtCurrent;
-    m_rtLastStop = rtStop;
-    m_LastSeekers.clear();
-    m_LastSeekers.insert(caller);
-
     m_rtNewStart = m_rtCurrent = rtCurrent;
     m_rtNewStop = rtStop;
 
@@ -1286,9 +1295,22 @@ STDMETHODIMP CLAVSplitter::SetPositionsInternal(void *caller, LONGLONG *pCurrent
     if (ThreadExists())
     {
         DeliverBeginFlush();
-        CallWorker(CMD_SEEK);
+        const HRESULT hr = static_cast<HRESULT>(CallWorker(CMD_SEEK));
+        if (FAILED(hr))
+        {
+            m_rtCurrent = previousCurrent;
+            m_rtNewStart = previousNewStart;
+            m_rtNewStop = previousNewStop;
+            m_bStopValid = previousStopValid;
+        }
         DeliverEndFlush();
+        if (FAILED(hr))
+            return hr;
     }
+    m_rtLastStart = rtCurrent;
+    m_rtLastStop = rtStop;
+    m_LastSeekers.clear();
+    m_LastSeekers.insert(caller);
     DbgLog((LOG_TRACE, 20, " -> Seek finished", m_rtNewStart));
 
     return S_OK;

@@ -9,6 +9,7 @@
 #include "IMediaSideDataFFmpeg.h"
 #include "ILAVDynamicAllocator.h"
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <stdexcept>
 
@@ -115,6 +116,95 @@ static void inputTests(CLAVSplitter &filter)
     puts("PASS: input complete/partial reads, unreliable length, EOF, signed tail seeks");
 }
 
+struct SeekDemuxer : CBaseDemuxer
+{
+    std::atomic<HRESULT> seekResult{S_OK};
+    std::atomic<int> seeks{0}, reads{0};
+    CAMEvent readDone{TRUE};
+    explicit SeekDemuxer(CCritSec *lock) : CBaseDemuxer(NAME("seek test"), lock) {}
+    STDMETHODIMP Open(LPCOLESTR, LPCOLESTR, LPCOLESTR) override { return S_OK; }
+    REFERENCE_TIME GetDuration() const override { return 100000000; }
+    STDMETHODIMP GetNextPacket(Packet **packet) override
+    {
+        ++reads;
+        *packet = nullptr;
+        readDone.Set();
+        return E_FAIL;
+    }
+    STDMETHODIMP Seek(REFERENCE_TIME) override
+    {
+        ++seeks;
+        return seekResult.load();
+    }
+    STDMETHODIMP Reset() override { return S_OK; }
+    const char *GetContainerFormat() const override { return "mpegts"; }
+    const stream *SelectVideoStream() override { return nullptr; }
+    const stream *SelectAudioStream(std::list<std::string>) override { return nullptr; }
+    const stream *SelectSubtitleStream(std::list<CSubtitleSelector>, std::string) override { return nullptr; }
+};
+
+struct SplitterTest : CLAVSplitter
+{
+    using CLAVSplitter::SetPositionsInternal;
+    explicit SplitterTest(HRESULT *hr) : CLAVSplitter(nullptr, hr) { SetRuntimeConfig(TRUE); }
+    void start(SeekDemuxer *demuxer)
+    {
+        demuxer->AddRef();
+        m_pDemuxer = demuxer;
+        m_ePlaybackInit.Reset();
+        check(Create(), "create demux worker");
+        wait();
+    }
+    void wait() { check(m_ePlaybackInit.Wait(5000), "demux worker finishes seek or startup"); }
+    bool retained(REFERENCE_TIME start, REFERENCE_TIME stop, BOOL stopValid) const
+    {
+        return m_rtStart == start && m_rtCurrent == start && m_rtNewStart == start && m_rtStop == stop &&
+               m_rtNewStop == stop && m_bStopValid == stopValid;
+    }
+};
+
+static void seekTests()
+{
+    HRESULT hr = S_OK;
+    SplitterTest filter(&hr);
+    check(SUCCEEDED(hr), "construct seek test splitter");
+    auto *demuxer = new SeekDemuxer(&filter);
+    filter.start(demuxer);
+    check(demuxer->readDone.Wait(5000), "initial read finishes");
+    demuxer->readDone.Reset();
+    LONGLONG current = 10000000, stop = 90000000;
+    check(filter.SetPositions(&current, AM_SEEKING_AbsolutePositioning, &stop, AM_SEEKING_AbsolutePositioning) == S_OK,
+          "successful worker seek reaches caller");
+    filter.wait();
+    check(demuxer->readDone.Wait(5000), "successful seek resumes packet reading");
+    check(filter.retained(current, stop, TRUE), "successful seek publishes new segment state");
+    demuxer->seekResult = E_ACCESSDENIED;
+    const int reads = demuxer->reads;
+    current = 20000000;
+    stop = 80000000;
+    check(filter.SetPositions(&current, AM_SEEKING_AbsolutePositioning, &stop, AM_SEEKING_AbsolutePositioning) ==
+              E_ACCESSDENIED,
+          "worker seek failure reaches IMediaSeeking caller");
+    filter.wait();
+    check(filter.retained(10000000, 90000000, TRUE), "failed seek restores position and stop state");
+    check(demuxer->reads == reads, "failed seek does not read packets for a false new segment");
+    const int seeks = demuxer->seeks;
+    int otherCaller = 0;
+    check(filter.SetPositionsInternal(&otherCaller, &current, AM_SEEKING_AbsolutePositioning, &stop,
+                                     AM_SEEKING_AbsolutePositioning) == E_ACCESSDENIED,
+          "another caller does not see cached success for a failed seek");
+    filter.wait();
+    check(demuxer->seeks == seeks + 1, "failed seek is retried");
+    demuxer->seekResult = S_OK;
+    demuxer->readDone.Reset();
+    check(filter.SetPositions(&current, AM_SEEKING_AbsolutePositioning, &stop, AM_SEEKING_AbsolutePositioning) == S_OK,
+          "worker accepts recovery seek");
+    filter.wait();
+    check(demuxer->readDone.Wait(5000), "recovery seek resumes packet reading");
+    check(filter.retained(current, stop, TRUE), "recovery seek updates segment state");
+    puts("PASS: worker seek result, state rollback, halted delivery, failure retry, recovery");
+}
+
 int main()
 {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -125,6 +215,7 @@ int main()
         check(SUCCEEDED(hr), "construct splitter");
         filter.SetRuntimeConfig(TRUE);
         inputTests(filter);
+        seekTests();
         puts("ALL SPLITTER TESTS PASSED");
     }
     catch (const std::exception &e)
