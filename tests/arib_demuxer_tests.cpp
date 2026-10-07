@@ -196,11 +196,19 @@ static void timelineTests(ILAVFSettingsInternal *settings)
     {
         Demuxer d(&lock, settings, f);
         auto events = drain(d, f);
-        check(!events.empty(), "caption handed over when the clear replaces it");
-        check(events.front().readAt == 5, "caption held until the clear packet is read");
+        check(!events.empty(), "caption handed over as A/V advances");
+        check(events.front().readAt == 2, "caption delivered before the next subtitle PES");
         check(events.front().start == 0, "caption starts at its own timestamp");
+        std::map<std::string, REFERENCE_TIME> ends;
         for (const auto &e : events)
-            check(e.start == 0 && e.stop == 6250000, "clear truncates the caption exactly");
+        {
+            const auto payload = e.data.substr(e.data.find(','));
+            check(e.start == ends[payload], "clear leaves contiguous caption intervals");
+            check(e.stop <= 6250000, "no interval crosses the clear");
+            ends[payload] = e.stop;
+        }
+        for (const auto &end : ends)
+            check(end.second == 6250000, "clear truncates the caption exactly");
         check(d.pendingEmpty(), "clear removes pending caption");
     }
     check(f.live == 0, "all caption and A/V buffers released");
@@ -311,11 +319,43 @@ static void timelineTests(ILAVFSettingsInternal *settings)
         check(!ends.empty(), "long caption emitted");
         for (const auto &e : ends)
             check(e.second >= 600000000, "caption persists for all 60 seconds through EOF");
-        // 60s of caption at a 10s hold is a handful of hand-overs, not one per packet.
+        // One batch for each media timestamp here, rather than repeated events
+        // covering the same interval.
         for (const auto &e : parts)
-            check(e.second <= 8, "caption is not re-sent once per packet");
+            check(e.second <= 62, "caption batches are bounded by media progress");
     }
     check(longCaption.live == 0, "long caption buffer ownership");
+    for (REFERENCE_TIME delay : {-2000000LL, 0LL, 5000000LL})
+    {
+        Feed sparse;
+        sparse.samples.push_back({0, 0, textPES()});
+        for (int ms = 20; ms <= 60000; ms += 20)
+            sparse.samples.push_back({1, ms, {0, 0, 0, 0}});
+        {
+            Demuxer d(&lock, settings, sparse);
+            Packet *p = nullptr;
+            check(d.GetNextPacket(&p) == S_FALSE && !p, "sparse caption starts pending");
+            d.delayPending(delay);
+            const auto events = drain(d, sparse);
+            check(!events.empty() && events.front().readAt <= 6, "sparse caption delivered within 100ms of A/V");
+            std::map<std::string, REFERENCE_TIME> ends;
+            std::set<std::string> readOrders;
+            for (const auto &e : events)
+            {
+                const auto comma = e.data.find(',');
+                check(readOrders.insert(e.data.substr(0, comma)).second, "sparse intervals have unique read orders");
+                const auto payload = e.data.substr(comma);
+                const auto it = ends.find(payload);
+                check(e.start == (it == ends.end() ? delay : it->second), "sparse intervals have no gap or overlap");
+                check(e.stop > e.start, "sparse interval has positive duration");
+                ends[payload] = e.stop;
+            }
+            for (const auto &end : ends)
+                check(end.second == 600200000 + delay, "sparse caption extends through final A/V packet");
+            check(d.pendingEmpty(), "EOF drains sparse caption");
+        }
+        check(sparse.live == 0, "sparse caption releases all input buffers");
+    }
     for (REFERENCE_TIME delay : {-2000000LL, 5000000LL})
     {
         Feed shifted{{{0, 0, textPES()}, {1, 250, {0, 0, 0, 0}}}};

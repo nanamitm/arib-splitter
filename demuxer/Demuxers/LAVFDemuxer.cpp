@@ -701,23 +701,14 @@ static void RenumberASSReadOrder(Packet *packet, LONG readOrder)
 }
 
 
-// How long an ARIB caption with an indefinite duration is committed for at a
-// time. The pending caption is handed over when the next caption replaces it,
-// when this much of the stream has gone by, or at the end of the file, so one
-// caption normally costs the renderer a single batch of ASS events.
-//
-// Handing a batch over at the end of the interval it covers is deliberate: the
-// splitter reads far ahead of the renderer, so the events still arrive long
-// before they are presented, and re-sending the same caption over and over is
-// what gives a renderer the chance to composite a frame from a batch it has only
-// half received.
-static constexpr REFERENCE_TIME kAribCaptionHold = 10LL * 10000000LL;
+// Commit short, non-overlapping intervals as the media advances. A/V queues
+// cannot guarantee ten seconds of read-ahead, and a broadcast need not send
+// another caption PES while an indefinite caption remains visible.
+static constexpr REFERENCE_TIME kAribCaptionCommitInterval = 100LL * 10000LL;
 
-// Hand over the caption that is waiting for its stop time and commit the next
-// interval of it. Called when the stream keeps sending packets that decode to no
-// caption while an indefinite one should stay on screen: without this the caption
-// would end when its committed interval does. Returns the packet to deliver, or
-// nullptr when the interval has not gone by yet.
+// Commit the elapsed part of a pending caption on A/V progress or a subtitle
+// PES with no new caption. Keep the remaining part pending so a later clear or
+// replacement can still determine its exact end without retracting ASS events.
 Packet *CLAVFDemuxer::ResendAribPendingCaption(int pendingKey, REFERENCE_TIME now)
 {
     auto it = m_aribPendingPackets.find(pendingKey);
@@ -725,12 +716,21 @@ Packet *CLAVFDemuxer::ResendAribPendingCaption(int pendingKey, REFERENCE_TIME no
         return nullptr;
 
     Packet *deliver = it->second;
-    if (now == Packet::INVALID_TIME || deliver->rtStop == Packet::INVALID_TIME ||
-        now < deliver->rtStop)
+    if (now == Packet::INVALID_TIME)
         return nullptr;
 
-    if (m_aribPendingExplicit.erase(pendingKey))
+    const bool explicitStop = m_aribPendingExplicit.count(pendingKey) != 0;
+    const REFERENCE_TIME deadline = deliver->rtStop;
+    // Compare in the caption timeline, including the configured offset.
+    const REFERENCE_TIME captionTime = now + m_aribPendingDelay[pendingKey];
+    const REFERENCE_TIME stop = explicitStop ? (std::min)(captionTime, deadline) : captionTime;
+    if (stop <= deliver->rtStart ||
+        (stop - deliver->rtStart < kAribCaptionCommitInterval && (!explicitStop || stop < deadline)))
+        return nullptr;
+
+    if (explicitStop && stop == deadline)
     {
+        m_aribPendingExplicit.erase(pendingKey);
         m_aribPendingPackets.erase(it);
         m_aribPendingDelay.erase(pendingKey);
         auto extras = m_aribPendingExtras.find(pendingKey);
@@ -748,11 +748,12 @@ Packet *CLAVFDemuxer::ResendAribPendingCaption(int pendingKey, REFERENCE_TIME no
     Packet *next = ClonePacket(deliver);
     if (next)
     {
-        next->rtStart = deliver->rtStop;
-        next->rtStop = next->rtStart + kAribCaptionHold;
+        next->rtStart = stop;
+        next->rtStop = explicitStop ? deadline : next->rtStart + kAribCaptionCommitInterval;
         RenumberASSReadOrder(next, NextAribReadOrder());
     }
     it->second = next;
+    deliver->rtStop = stop;
 
     auto &extras = m_aribPendingExtras[pendingKey];
     std::vector<Packet *> nextExtras;
@@ -766,6 +767,7 @@ Packet *CLAVFDemuxer::ResendAribPendingCaption(int pendingKey, REFERENCE_TIME no
             RenumberASSReadOrder(nextExtra, NextAribReadOrder());
             nextExtras.push_back(nextExtra);
         }
+        extra->rtStop = stop;
         m_aribRegionQueue.push_back(extra);
     }
     extras.swap(nextExtras);
@@ -3111,7 +3113,7 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                         if (hasExplicitStop)
                             rtNewStop = pPacket->rtStart + caption.wait_duration * 10000LL;
                         else
-                            rtNewStop = pPacket->rtStart + kAribCaptionHold;
+                            rtNewStop = pPacket->rtStart + kAribCaptionCommitInterval;
 
                         ARIB_LOG("[ARIB] caption timing flags=0x%x wait=%lld start=%lld stop=%lld delay=%dms\n",
                                  (unsigned)caption.flags, (long long)caption.wait_duration,
@@ -3376,29 +3378,16 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
         if (pPacket->rtStop != Packet::INVALID_TIME)
             m_aribLatestAVTime = (std::max)(m_aribLatestAVTime, pPacket->rtStop);
 
-        // A finite caption can be handed over once A/V reaches its deadline.
-        // Return it before this A/V packet, keeping the original packet queued.
-        for (auto it = m_aribPendingExplicit.begin(); it != m_aribPendingExplicit.end();)
+        // Advance every pending caption, including indefinite ones, without
+        // depending on another subtitle PES. Resend may erase the current key.
+        // Return the complete subtitle batch before the triggering A/V packet.
+        for (auto it = m_aribPendingPackets.begin(); it != m_aribPendingPackets.end();)
         {
-            const int key = *it;
-            auto pending = m_aribPendingPackets.find(key);
-            if (pending == m_aribPendingPackets.end() || !pending->second ||
-                m_aribLatestAVTime < pending->second->rtStop)
-            {
-                ++it;
-                continue;
-            }
-            m_aribRegionQueue.push_back(pending->second);
-            m_aribPendingPackets.erase(pending);
-            m_aribPendingDelay.erase(key);
-            auto extras = m_aribPendingExtras.find(key);
-            if (extras != m_aribPendingExtras.end())
-            {
-                for (Packet *extra : extras->second)
-                    m_aribRegionQueue.push_back(extra);
-                m_aribPendingExtras.erase(extras);
-            }
-            it = m_aribPendingExplicit.erase(it);
+            const int key = it->first;
+            ++it;
+            const size_t batchStart = m_aribRegionQueue.size();
+            if (Packet *caption = ResendAribPendingCaption(key, m_aribLatestAVTime))
+                m_aribRegionQueue.insert(m_aribRegionQueue.begin() + batchStart, caption);
         }
         if (!m_aribRegionQueue.empty())
         {

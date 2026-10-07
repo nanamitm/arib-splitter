@@ -262,8 +262,8 @@ class CLAVFDemuxer
     std::map<int, aribcc_decoder_t *>  m_aribSuperDecoders;
 
     // Pending captions, keyed by stream index * 2 + caption type.
-    // Explicit durations are held until their deadline or a replacement so
-    // an early clear can shorten them before they are sent downstream.
+    // Only the uncommitted part stays pending. Explicit durations retain their
+    // original deadline, allowing an early clear to shorten the remaining part.
     std::map<int, Packet *> m_aribPendingPackets;
     std::map<int, REFERENCE_TIME> m_aribPendingDelay;
     std::set<int> m_aribPendingExplicit;
