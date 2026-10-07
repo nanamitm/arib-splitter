@@ -269,6 +269,8 @@ class CLAVFDemuxer
     std::set<int> m_aribPendingExplicit;
     REFERENCE_TIME m_aribLatestAVTime = 0;
 
+    // Largest amount the A/V read position has led a caption PES, per pending key.
+    std::map<int, REFERENCE_TIME> m_aribCaptionLead;
     // Extra region packets (ruby etc.) stored alongside the pending packet.
     // Released and rtStop-corrected together with the primary pending packet.
     std::map<int, std::vector<Packet *>> m_aribPendingExtras;

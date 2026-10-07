@@ -345,6 +345,7 @@ void CLAVFDemuxer::FlushAribPendingPackets()
 {
     DropAribPendingCaption();
     m_aribLatestAVTime = 0;
+    m_aribCaptionLead.clear();
     for (auto *p : m_aribRegionQueue)
         delete p;
     m_aribRegionQueue.clear();
@@ -705,6 +706,12 @@ static void RenumberASSReadOrder(Packet *packet, LONG readOrder)
 // cannot guarantee ten seconds of read-ahead, and a broadcast need not send
 // another caption PES while an indefinite caption remains visible.
 static constexpr REFERENCE_TIME kAribCaptionCommitInterval = 100LL * 10000LL;
+
+// A/V is muxed ahead of captions, so the latest A/V timestamp read can be past
+// the PTS of the next caption PES. Commit only up to the A/V time minus the
+// largest lead seen on this caption stream, less this margin for mux jitter, so
+// a later clear or replacement never lands inside an interval already sent.
+static constexpr REFERENCE_TIME kAribCaptionCommitGuard = 300LL * 10000LL;
 
 // Commit the elapsed part of a pending caption on A/V progress or a subtitle
 // PES with no new caption. Keep the remaining part pending so a later clear or
@@ -3063,6 +3070,12 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
                     ARIB_LOG("[ARIB] first3: %02X %02X %02X\n",
                              rawData[0], rawData[1], rawData[2]);
 
+                if (rt != Packet::INVALID_TIME && m_aribLatestAVTime > 0)
+                {
+                    REFERENCE_TIME &lead = m_aribCaptionLead[pendingKey];
+                    lead = (std::max)(lead, m_aribLatestAVTime - rt);
+                }
+
                 aribcc_decoder_t *dec = GetOrCreateAribDecoder(streamIdx, isSuperimpose);
                 if (dec && dataSize > 0)
                 {
@@ -3385,8 +3398,13 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
         {
             const int key = it->first;
             ++it;
+            // Map the A/V read position back to the caption stream's mux position.
+            auto lead = m_aribCaptionLead.find(key);
+            const REFERENCE_TIME commitTime = m_aribLatestAVTime -
+                                              (lead != m_aribCaptionLead.end() ? lead->second : 0) -
+                                              kAribCaptionCommitGuard;
             const size_t batchStart = m_aribRegionQueue.size();
-            if (Packet *caption = ResendAribPendingCaption(key, m_aribLatestAVTime))
+            if (Packet *caption = ResendAribPendingCaption(key, commitTime))
                 m_aribRegionQueue.insert(m_aribRegionQueue.begin() + batchStart, caption);
         }
         if (!m_aribRegionQueue.empty())
