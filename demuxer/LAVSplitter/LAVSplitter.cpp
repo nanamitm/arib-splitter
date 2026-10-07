@@ -1302,6 +1302,10 @@ STDMETHODIMP CLAVSplitter::SetPositionsInternal(void *caller, LONGLONG *pCurrent
             m_rtNewStart = previousNewStart;
             m_rtNewStop = previousNewStop;
             m_bStopValid = previousStopValid;
+            // The worker is halted and the demuxer's actual position is unknown.
+            // Even the last successful target now needs a real recovery seek.
+            m_rtLastStart = m_rtLastStop = _I64_MIN;
+            m_LastSeekers.clear();
         }
         DeliverEndFlush();
         if (FAILED(hr))

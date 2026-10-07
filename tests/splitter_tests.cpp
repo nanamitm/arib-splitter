@@ -197,6 +197,13 @@ static void seekTests()
           "another caller does not see cached success for a failed seek");
     filter.wait();
     check(demuxer->seeks == seeks + 1, "failed seek is retried");
+    LONGLONG previous = 10000000, previousStop = 90000000;
+    int previousCaller = 0;
+    check(filter.SetPositionsInternal(&previousCaller, &previous, AM_SEEKING_AbsolutePositioning, &previousStop,
+                                     AM_SEEKING_AbsolutePositioning) == E_ACCESSDENIED,
+          "last successful target also needs a real seek after failure");
+    filter.wait();
+    check(demuxer->seeks == seeks + 2, "failed seek invalidates previous successful target cache");
     demuxer->seekResult = S_OK;
     demuxer->readDone.Reset();
     check(filter.SetPositions(&current, AM_SEEKING_AbsolutePositioning, &stop, AM_SEEKING_AbsolutePositioning) == S_OK,
