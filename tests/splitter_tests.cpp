@@ -4,6 +4,7 @@
 #include <qnetwork.h>
 #include "LAVSplitter.h"
 #include "InputPin.h"
+#include "OutputPin.h"
 #include "moreuuids.h"
 #include "IGraphRebuildDelegate.h"
 #include "IMediaSideDataFFmpeg.h"
@@ -11,6 +12,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
+#include <memory>
 #include <stdexcept>
 
 CFactoryTemplate g_Templates[1] = {};
@@ -205,6 +207,85 @@ static void seekTests()
     puts("PASS: worker seek result, state rollback, halted delivery, failure retry, recovery");
 }
 
+struct ParserPinTest : CLAVOutputPin
+{
+    ParserPinTest(CLAVSplitter *filter, std::deque<CMediaType> &types, HRESULT *hr)
+        : CLAVOutputPin(types, L"test PCM", filter, filter, hr, CBaseDemuxer::audio, "mpegts")
+    {
+        check(SUCCEEDED(SetMediaType(&types.front())), "set planar PCM media type");
+    }
+    Packet *pop() { return m_queue.Get(); }
+};
+
+static void freePCM(void *opaque, uint8_t *data)
+{
+    --*static_cast<int *>(opaque);
+    av_free(data);
+}
+
+static Packet *planarPacket(int &live, const std::vector<int16_t> &samples)
+{
+    AVPacket source = {};
+    source.size = static_cast<int>(samples.size() * sizeof(int16_t));
+    source.data = static_cast<uint8_t *>(av_mallocz(source.size + AV_INPUT_BUFFER_PADDING_SIZE));
+    memcpy(source.data, samples.data(), source.size);
+    source.buf = av_buffer_create(source.data, source.size, freePCM, &live, 0);
+    ++live;
+    auto *packet = new Packet();
+    check(packet->SetPacket(&source) == 0, "reference planar input buffer");
+    av_packet_unref(&source);
+    packet->dwFlags = LAV_PACKET_PLANAR_PCM;
+    packet->StreamId = 42;
+    packet->rtStart = 1000000;
+    packet->rtStop = 2000000;
+    return packet;
+}
+
+static void pcmTests(CLAVSplitter &filter)
+{
+    for (WORD channels : {WORD(1), WORD(2), WORD(3)})
+    {
+        CMediaType mt;
+        mt.SetType(&MEDIATYPE_Audio);
+        mt.SetSubtype(&MEDIASUBTYPE_PCM);
+        mt.SetFormatType(&FORMAT_WaveFormatEx);
+        auto *wf = reinterpret_cast<WAVEFORMATEX *>(mt.AllocFormatBuffer(sizeof(WAVEFORMATEX)));
+        *wf = {};
+        wf->wFormatTag = WAVE_FORMAT_PCM;
+        wf->nChannels = channels;
+        wf->nSamplesPerSec = 48000;
+        wf->wBitsPerSample = 16;
+        wf->nBlockAlign = channels * 2;
+        std::deque<CMediaType> types{mt};
+        HRESULT hr = S_OK;
+        ParserPinTest pin(&filter, types, &hr);
+        check(SUCCEEDED(hr), "construct planar PCM output pin");
+        CStreamParser parser(&pin, "mpegts");
+        std::vector<int16_t> planar, interleaved;
+        for (int channel = 0; channel < channels; ++channel)
+            for (int sample = 1; sample <= 3; ++sample)
+                planar.push_back(static_cast<int16_t>(channel * 10 + sample));
+        for (int sample = 1; sample <= 3; ++sample)
+            for (int channel = 0; channel < channels; ++channel)
+                interleaved.push_back(static_cast<int16_t>(channel * 10 + sample));
+        int live = 0;
+        for (int iteration = 0; iteration < 1000; ++iteration)
+        {
+            check(parser.Parse(MEDIASUBTYPE_PCM, planarPacket(live, planar)) == S_OK, "convert planar PCM");
+            check(live == (channels == 1 ? 1 : 0), "converted input is released immediately");
+            std::unique_ptr<Packet> out(pin.pop());
+            check(out && out->GetDataSize() == static_cast<int>(interleaved.size() * sizeof(int16_t)),
+                  "PCM output size");
+            check(memcmp(out->GetData(), interleaved.data(), out->GetDataSize()) == 0, "PCM channel interleaving");
+            check(out->StreamId == 42 && out->rtStart == 1000000 && out->rtStop == 2000000,
+                  "PCM timestamps and stream preserved");
+            out.reset();
+            check(live == 0, "all PCM input buffers released");
+        }
+    }
+    puts("PASS: mono passthrough, stereo/three-channel interleaving, 3000 PCM input buffer releases");
+}
+
 int main()
 {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -216,6 +297,7 @@ int main()
         filter.SetRuntimeConfig(TRUE);
         inputTests(filter);
         seekTests();
+        pcmTests(filter);
         puts("ALL SPLITTER TESTS PASSED");
     }
     catch (const std::exception &e)

@@ -154,6 +154,7 @@ class CLAVOutputPin
     virtual HRESULT DeliverPacket(Packet *pPacket);
 
   private:
+    friend struct ParserPinTest;
     enum
     {
         CMD_EXIT

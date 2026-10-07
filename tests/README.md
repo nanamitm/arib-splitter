@@ -23,6 +23,13 @@ against the production objects, and fails on the first failing test. Use
   held, then races 5,000 mode changes against 1,000 AAC/PCM reinitializations.
   Runtime configuration prevents changes to the user's saved audio settings.
 
+- `splitter_tests.cpp` exercises production input callbacks with a deterministic
+  `IAsyncReader`: complete/partial reads, unavailable length, EOF, and signed
+  end-relative seeks. It runs the demux worker to verify seek failure propagation,
+  position rollback, blocked packet delivery, retry, and recovery. PCM tests check
+  mono passthrough and multi-channel interleaving while counting input-buffer
+  releases over 3,000 packets.
+
 - `property_page_tests.cpp` loads both filter DLLs without registration and tests
   all six filter-owned pages, including Audio Status. It switches dark/light/dark,
   reactivates the same COM page, checks background colors and unchanged dirty state,

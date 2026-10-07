@@ -24,6 +24,7 @@
 
 #include "OutputPin.h"
 #include "H264Nalu.h"
+#include <memory>
 
 #pragma warning(push)
 #pragma warning(disable : 4101)
@@ -517,6 +518,7 @@ HRESULT CStreamParser::ParseSRT(Packet *pPacket)
 
 HRESULT CStreamParser::ParsePlanarPCM(Packet *pPacket)
 {
+    std::unique_ptr<Packet> input(pPacket);
     CMediaType mt = m_pPin->GetActiveMediaType();
 
     WORD nChannels = 0, nBPS = 0, nBlockAlign = 0;
@@ -524,13 +526,18 @@ HRESULT CStreamParser::ParsePlanarPCM(Packet *pPacket)
 
     // Mono needs no special handling
     if (nChannels == 1)
-        return Queue(pPacket);
+        return Queue(input.release());
 
-    Packet *out = new Packet();
+    const int nBytesPerChannel = nBPS / 8;
+    if (nChannels == 0 || nBytesPerChannel == 0 || nBPS % 8 != 0 ||
+        pPacket->GetDataSize() % (nChannels * nBytesPerChannel) != 0)
+        return E_INVALIDARG;
+
+    std::unique_ptr<Packet> out(new Packet());
     out->CopyProperties(pPacket);
-    out->SetDataSize(pPacket->GetDataSize());
+    if (out->SetDataSize(pPacket->GetDataSize()) < 0)
+        return E_OUTOFMEMORY;
 
-    int nBytesPerChannel = nBPS / 8;
     int nAudioBlocks = pPacket->GetDataSize() / nChannels;
     BYTE *out_data = out->GetData();
     const BYTE *in_data = pPacket->GetData();
@@ -549,5 +556,5 @@ HRESULT CStreamParser::ParsePlanarPCM(Packet *pPacket)
         in_data += nBytesPerChannel;
     }
 
-    return Queue(out);
+    return Queue(out.release());
 }
