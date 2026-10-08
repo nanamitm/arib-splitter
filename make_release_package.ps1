@@ -117,6 +117,28 @@ foreach ($file in $rootFiles) {
 
 Copy-Item -LiteralPath $iniSrc -Destination (Join-Path $packageDir "ARIBSplitter.ini")
 
+# Load each filter with only the package directory and System32 on the DLL
+# search path, so a runtime DLL that the build output depends on but the
+# package does not ship (such as zlib1.dll) fails here instead of on install.
+Add-Type -Namespace ARIBPackage -Name NativeMethods -MemberDefinition @'
+[DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+public static extern IntPtr LoadLibraryExW(string path, IntPtr file, uint flags);
+[DllImport("kernel32.dll")]
+public static extern bool FreeLibrary(IntPtr module);
+'@
+$LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR = 0x100
+$LOAD_LIBRARY_SEARCH_SYSTEM32 = 0x800
+foreach ($file in $payload | Where-Object { $_ -like "*.ax" }) {
+    $path = Join-Path $packageDir $file
+    $module = [ARIBPackage.NativeMethods]::LoadLibraryExW($path, [IntPtr]::Zero,
+        $LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR -bor $LOAD_LIBRARY_SEARCH_SYSTEM32)
+    if ($module -eq [IntPtr]::Zero) {
+        $err = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        throw "$file does not load from the package (Win32 error $err). A DLL it depends on is missing from the payload; check FFmpeg's imports with objdump -p."
+    }
+    [void][ARIBPackage.NativeMethods]::FreeLibrary($module)
+}
+
 $licenseDir = Join-Path $packageDir "licenses\darkmodelib"
 New-Item -ItemType Directory -Force -Path $licenseDir | Out-Null
 Copy-Item -Path (Join-Path $repoRoot "thirdparty\darkmodelib\LICENSE*.md") -Destination $licenseDir

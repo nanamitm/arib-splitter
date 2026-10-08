@@ -26,6 +26,25 @@ make_dirs() (
   mkdir -p bin_${archdir}d/lib
 )
 
+# Fail when an FFmpeg DLL imports a MinGW runtime DLL that is not shipped.
+# Only the FFmpeg DLLs themselves and libwinpthread-1.dll go into the package.
+check_imports() (
+  status=0
+  for file in lib*/*-lav-*.dll; do
+    for dep in $(objdump -p "$file" | sed -n 's/^[[:space:]]*DLL Name: //p'); do
+      case "$(echo "$dep" | tr 'A-Z' 'a-z')" in
+      *-lav-*.dll | libwinpthread-1.dll)
+        ;;
+      lib*.dll | zlib1.dll)
+        echo "$file imports $dep, which is not part of the release package"
+        status=1
+        ;;
+      esac
+    done
+  done
+  exit $status
+)
+
 copy_libs() (
   # copy and process .dll/.pdb
   for file in lib*/*-lav-*.dll; do
@@ -85,10 +104,21 @@ configure() (
 
   EXTRA_CFLAGS="-fno-tree-vectorize -D_WIN32_WINNT=0x0600 -DWINVER=0x0600 -gdwarf-5"
   # -static-libgcc embeds the GCC SEH runtime into each DLL so the output does
-  # not depend on libgcc_s_seh-1.dll.  The caller is expected to have removed
-  # libz.dll.a and libwinpthread.dll.a before invoking configure so that -lz
-  # and -lwinpthread fall back to their static archives automatically.
+  # not depend on libgcc_s_seh-1.dll.
   EXTRA_LDFLAGS="-static-libgcc"
+
+  # Link zlib statically so the DLLs do not depend on zlib1.dll. ld takes -lz
+  # from the first directory holding libz.dll.a or libz.a, so search one that
+  # holds only the static archive ahead of the toolchain's own lib directory.
+  STATIC_LIBS_DIR="$(pwd)/ffbuild/static-libs"
+  ZLIB_ARCHIVE="$(${cross_prefix}gcc -print-file-name=libz.a)"
+  if [ ! -f "${ZLIB_ARCHIVE}" ]; then
+    echo "Static zlib (libz.a) was not found; install mingw-w64-x86_64-zlib"
+    exit 1
+  fi
+  mkdir -p "${STATIC_LIBS_DIR}"
+  cp -f "${ZLIB_ARCHIVE}" "${STATIC_LIBS_DIR}/"
+  EXTRA_LDFLAGS="${EXTRA_LDFLAGS} -L${STATIC_LIBS_DIR}"
   THIRDPARTY_ABS="$(cd ../thirdparty/64 && pwd)"
   export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:${THIRDPARTY_ABS}/lib/pkgconfig/"
   OPTIONS="${OPTIONS} --enable-cross-compile --cross-prefix=${cross_prefix} --target-os=mingw32 --pkg-config=pkg-config"
@@ -125,6 +155,7 @@ fi
 ## Only if configure succeeded, actually build
 if ! $clean_build || [ ${CONFIGRETVAL} -eq 0 ]; then
   build &&
+  check_imports &&
   copy_libs || exit 1
 fi
 
