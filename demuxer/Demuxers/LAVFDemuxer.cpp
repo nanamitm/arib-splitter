@@ -597,6 +597,20 @@ static bool IsUnicodeHalfwidthGlyph(const aribcc_caption_char_t &ch)
     return cp < 0x80 || (cp >= 0xFF61 && cp <= 0xFF9F);
 }
 
+// Code points whose glyph advances exactly one em in a Japanese font. Symbols
+// of ambiguous East Asian width (U+266C, U+2192, U+2460 ...) are often missing
+// from the font or drawn proportionally by a fallback font, so they do not
+// qualify even though ARIB lays them out in a full width cell.
+static bool IsUnicodeFixedFullwidthGlyph(uint32_t cp)
+{
+    return (cp >= 0x3000 && cp <= 0x30FF) ||   // CJK symbols, kana
+           (cp >= 0x31F0 && cp <= 0x9FFF) ||   // kana extensions, enclosed CJK, ideographs
+           (cp >= 0xF900 && cp <= 0xFAFF) ||   // CJK compatibility ideographs
+           (cp >= 0xFF01 && cp <= 0xFF60) ||   // full width forms
+           (cp >= 0xFFE0 && cp <= 0xFFE6) ||
+           (cp >= 0x20000 && cp <= 0x3FFFF);   // supplementary ideographs
+}
+
 static bool ShouldStretchASSGlyph(const AribCaptionSettings &settings, const aribcc_caption_char_t &ch)
 {
     if (settings.stretchScale == 100 || settings.stretchChars.empty() || ch.type == ARIBCC_CHARTYPE_DRCS)
@@ -1095,8 +1109,9 @@ static void BuildASSCharParts(const aribcc_caption_t &caption,
     out.assFs = assFs;
     // A full width glyph advances exactly one em in any Japanese font, so its
     // place inside a run can be reproduced with \fsp. Half width, horizontally
-    // scaled and DRCS cells depend on font metrics and stay one event each.
-    out.mergeable = ch.type != ARIBCC_CHARTYPE_DRCS && !halfwidth && fscx == 100 && assFs > 0;
+    // scaled, DRCS and symbol cells depend on font metrics and stay one event each.
+    out.mergeable = ch.type != ARIBCC_CHARTYPE_DRCS && IsUnicodeFixedFullwidthGlyph(cp) &&
+                    fscx == 100 && assFs > 0;
     // A blank cell paints nothing of its own; its background rect is a separate
     // event, so it can be dropped instead of costing one more ASS event.
     out.blank = ch.type != ARIBCC_CHARTYPE_DRCS && !underlined && (cp == 0x20 || cp == 0x3000);
