@@ -24,3 +24,5 @@
 /thirdparty/zlib-*/
 /thirdparty/zlib-build-*/
 /work/
+/compile_commands.json
+/.cache/

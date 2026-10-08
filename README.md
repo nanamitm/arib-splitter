@@ -96,6 +96,10 @@ msbuild ARIBSplitter.sln /m /p:Configuration=Release /p:Platform=x64
 
 `tests\run_tests.ps1` builds the solution the same way and then runs the tests.
 
+For clangd and other editor tooling, `tools\gen_compile_commands.ps1` writes
+`compile_commands.json` at the repository root from the compile commands of the
+last Release x64 build. Run it again after project settings change.
+
 The x64 Release output is written under:
 
 ```text
