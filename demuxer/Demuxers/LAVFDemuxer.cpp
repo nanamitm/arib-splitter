@@ -603,8 +603,11 @@ static bool IsUnicodeHalfwidthGlyph(const aribcc_caption_char_t &ch)
 // qualify even though ARIB lays them out in a full width cell.
 static bool IsUnicodeFixedFullwidthGlyph(uint32_t cp)
 {
-    return (cp >= 0x3000 && cp <= 0x30FF) ||   // CJK symbols, kana
-           (cp >= 0x31F0 && cp <= 0x9FFF) ||   // kana extensions, enclosed CJK, ideographs
+    // U+3099/309A are combining sound marks with no advance of their own.
+    return (cp >= 0x3000 && cp <= 0x3098) ||   // CJK symbols, hiragana
+           (cp >= 0x309B && cp <= 0x30FF) ||   // spacing sound marks, katakana
+           (cp >= 0x31F0 && cp <= 0x4DBF) ||   // kana extensions, enclosed CJK, ideographs ext. A
+           (cp >= 0x4E00 && cp <= 0x9FFF) ||   // ideographs (skipping the Yijing hexagrams)
            (cp >= 0xF900 && cp <= 0xFAFF) ||   // CJK compatibility ideographs
            (cp >= 0xFF01 && cp <= 0xFF60) ||   // full width forms
            (cp >= 0xFFE0 && cp <= 0xFFE6) ||
