@@ -67,9 +67,11 @@ The project uses these submodules:
 
 The current development and release build targets Windows x64 only and has
 been tested with Visual Studio/MSBuild. The filters require Windows 7 or later,
-matching FFmpeg.
+matching FFmpeg. The FFmpeg DLLs use the Universal C Runtime, which Windows 10
+and later include; on Windows 7 and 8.1 install it with Windows Update
+(KB2999226) or any Visual C++ 2015 or later redistributable.
 
-The FFmpeg DLLs are built with `build_ffmpeg.sh` from an MSYS2 MINGW64 shell:
+The FFmpeg DLLs are built with `build_ffmpeg.sh` from an MSYS2 UCRT64 shell:
 
 ```sh
 ./build_ffmpeg.sh x64
@@ -77,8 +79,9 @@ The FFmpeg DLLs are built with `build_ffmpeg.sh` from an MSYS2 MINGW64 shell:
 
 The script links zlib statically even when MSYS2 also provides `libz.dll.a`,
 and fails if an FFmpeg DLL would import a MinGW runtime DLL that the release
-package does not ship (only `libwinpthread-1.dll` is shipped). Copy
-`/mingw64/bin/libwinpthread-1.dll` into `bin_x64\` before packaging.
+package does not ship (only `libwinpthread-1.dll` is shipped) or `msvcrt.dll`,
+which means the build ran in a MINGW64 shell. Copy
+`/ucrt64/bin/libwinpthread-1.dll` into `bin_x64\` before packaging.
 
 Build libaribcaption first if needed:
 

@@ -28,6 +28,8 @@ make_dirs() (
 
 # Fail when an FFmpeg DLL imports a MinGW runtime DLL that is not shipped.
 # Only the FFmpeg DLLs themselves and libwinpthread-1.dll go into the package.
+# The DLLs use the Universal C Runtime; msvcrt.dll means the build ran in a
+# MINGW64 shell instead of UCRT64.
 check_imports() (
   status=0
   for file in lib*/*-lav-*.dll; do
@@ -37,6 +39,10 @@ check_imports() (
         ;;
       lib*.dll | zlib1.dll)
         echo "$file imports $dep, which is not part of the release package"
+        status=1
+        ;;
+      msvcrt.dll)
+        echo "$file imports msvcrt.dll; build FFmpeg from an MSYS2 UCRT64 shell"
         status=1
         ;;
       esac
@@ -113,7 +119,7 @@ configure() (
   STATIC_LIBS_DIR="$(pwd)/ffbuild/static-libs"
   ZLIB_ARCHIVE="$(${cross_prefix}gcc -print-file-name=libz.a)"
   if [ ! -f "${ZLIB_ARCHIVE}" ]; then
-    echo "Static zlib (libz.a) was not found; install mingw-w64-x86_64-zlib"
+    echo "Static zlib (libz.a) was not found; install mingw-w64-ucrt-x86_64-zlib"
     exit 1
   fi
   mkdir -p "${STATIC_LIBS_DIR}"

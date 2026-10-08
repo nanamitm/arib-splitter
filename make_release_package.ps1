@@ -39,8 +39,8 @@ function Get-RuntimeFileHint {
     switch ($File) {
         "libwinpthread-1.dll" {
             return @(
-                "libwinpthread-1.dll is copied from the MSYS2 MinGW64 runtime after building FFmpeg.",
-                "Run build_ffmpeg.sh x64 in an MSYS2 MINGW64 shell, or copy /mingw64/bin/libwinpthread-1.dll into bin_x64 before packaging."
+                "libwinpthread-1.dll is copied from the MSYS2 UCRT64 runtime after building FFmpeg.",
+                "Run build_ffmpeg.sh x64 in an MSYS2 UCRT64 shell, or copy /ucrt64/bin/libwinpthread-1.dll into bin_x64 before packaging."
             )
         }
         { $_ -like "av*-lav-*.dll" -or $_ -like "sw*-lav-*.dll" } {

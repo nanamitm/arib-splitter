@@ -36,21 +36,21 @@ jobs:
           }
           "VERSION=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-      # ---------- FFmpeg (MSYS2 / MinGW-w64 x64) ----------
+      # ---------- FFmpeg (MSYS2 UCRT64 / MinGW-w64 x64) ----------
       # Static-link GCC/winpthread/zlib so the DLLs have no MinGW runtime dependencies.
 
       - name: Setup MSYS2
         uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW64
+          msystem: UCRT64
           update: true
           install: >-
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-binutils
-            mingw-w64-x86_64-nasm
-            mingw-w64-x86_64-pkg-config
-            mingw-w64-x86_64-zlib
-            mingw-w64-x86_64-bzip2
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-binutils
+            mingw-w64-ucrt-x86_64-nasm
+            mingw-w64-ucrt-x86_64-pkg-config
+            mingw-w64-ucrt-x86_64-zlib
+            mingw-w64-ucrt-x86_64-bzip2
             make
             diffutils
 
@@ -58,8 +58,8 @@ jobs:
         shell: msys2 {0}
         run: |
           for t in nm ar ranlib strip as dlltool; do
-            dst="/mingw64/bin/x86_64-w64-mingw32-${t}.exe"
-            src="/mingw64/bin/${t}.exe"
+            dst="/ucrt64/bin/x86_64-w64-mingw32-${t}.exe"
+            src="/ucrt64/bin/${t}.exe"
             [ -e "$dst" ] || ( [ -e "$src" ] && ln -sf "$src" "$dst" )
           done
           x86_64-w64-mingw32-nm --version
@@ -70,8 +70,8 @@ jobs:
           # Without these import libs, -lz and -lwinpthread fall back to
           # libz.a and libwinpthread.a so the DLLs don't depend on zlib1.dll
           # or libwinpthread-1.dll at runtime.
-          rm -f /mingw64/lib/libz.dll.a
-          rm -f /mingw64/lib/libwinpthread.dll.a
+          rm -f /ucrt64/lib/libz.dll.a
+          rm -f /ucrt64/lib/libwinpthread.dll.a
 
       - name: Build FFmpeg x64
         shell: msys2 {0}
@@ -86,7 +86,7 @@ jobs:
           # libwinpthread-1.dll cannot be eliminated via static linking because
           # libwinpthread.a itself references the DLL.  Copy it alongside the
           # FFmpeg DLLs so the package is self-contained.
-          cp /mingw64/bin/libwinpthread-1.dll bin_x64/
+          cp /ucrt64/bin/libwinpthread-1.dll bin_x64/
 
       # ---------- libaribcaption (CMake / MSVC) ----------
 
