@@ -303,7 +303,7 @@ struct WAVEFORMATEXPS2 : public WAVEFORMATEX
 {
     DWORD dwInterleave;
 
-    struct WAVEFORMATEXPS2()
+    WAVEFORMATEXPS2()
     {
         memset(this, 0, sizeof(*this));
         cbSize = sizeof(WAVEFORMATEXPS2) - sizeof(WAVEFORMATEX);
@@ -1374,7 +1374,7 @@ struct WAVEFORMATEX_HDMV_LPCM : public WAVEFORMATEX
 {
     BYTE channel_conf;
 
-    struct WAVEFORMATEX_HDMV_LPCM()
+    WAVEFORMATEX_HDMV_LPCM()
     {
         memset(this, 0, sizeof(*this));
         cbSize = sizeof(WAVEFORMATEX_HDMV_LPCM) - sizeof(WAVEFORMATEX);
@@ -1392,7 +1392,7 @@ struct WAVEFORMATEXFFMPEG
     int nCodecId;
     WAVEFORMATEX wfex;
 
-    struct WAVEFORMATEXFFMPEG()
+    WAVEFORMATEXFFMPEG()
     {
         nCodecId = 0;
     }

@@ -73,7 +73,7 @@ class CBaseDemuxer : public CUnknown
         std::string trackName;
         LCID lcid;
         MediaSideDataFFMpeg SideData;
-        struct stream()
+        stream()
         {
             streamInfo = nullptr;
             pid = 0;
