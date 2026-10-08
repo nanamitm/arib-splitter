@@ -29,3 +29,8 @@ void AribGetIniPath(WCHAR *iniPath, DWORD size);
 // ASS script header (Script Info / V4+ Styles / Events) used as the subtitle
 // media type extradata. The Default style font comes from [ARIB] FontName.
 std::string AribBuildASSScriptHeader();
+
+// Whether |u8str|, the text of one caption cell, is a single glyph that
+// advances exactly one em in |fontName| (UTF-8; empty means the default
+// MS Gothic), so a run of such cells can be laid out with \fsp alone.
+bool AribGlyphAdvancesOneEm(const std::string &fontName, const char *u8str);

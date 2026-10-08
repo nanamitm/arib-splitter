@@ -37,9 +37,12 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
+#include <dwrite.h>
 
 extern "C"
 {
@@ -591,16 +594,16 @@ static uint32_t DecodeFirstUTF8Codepoint(const char *s)
     return 0;
 }
 
-static bool IsUnicodeHalfwidthGlyph(const aribcc_caption_char_t &ch)
+static bool IsUnicodeHalfwidthGlyph(uint32_t cp)
 {
-    uint32_t cp = DecodeFirstUTF8Codepoint(ch.u8str);
     return cp < 0x80 || (cp >= 0xFF61 && cp <= 0xFF9F);
 }
 
-// Code points whose glyph advances exactly one em in a Japanese font. Symbols
-// of ambiguous East Asian width (U+266C, U+2192, U+2460 ...) are often missing
-// from the font or drawn proportionally by a fallback font, so they do not
-// qualify even though ARIB lays them out in a full width cell.
+// Code points whose glyph advances exactly one em in a monospaced Japanese
+// font. Symbols of ambiguous East Asian width (U+266C, U+2192, U+2460 ...) are
+// often missing from the font or drawn proportionally by a fallback font, so
+// they do not qualify even though ARIB lays them out in a full width cell. Only
+// used when the font itself cannot be measured.
 static bool IsUnicodeFixedFullwidthGlyph(uint32_t cp)
 {
     // U+3099/309A are combining sound marks with no advance of their own.
@@ -614,12 +617,129 @@ static bool IsUnicodeFixedFullwidthGlyph(uint32_t cp)
            (cp >= 0x20000 && cp <= 0x3FFFF);   // supplementary ideographs
 }
 
-static bool ShouldStretchASSGlyph(const AribCaptionSettings &settings, const aribcc_caption_char_t &ch)
+// Advance widths of the caption font, looked up with DirectWrite. The renderer
+// draws the ASS events with the same font, so a code point it maps to a glyph
+// one em wide is exactly as wide when the renderer draws it.
+class AribFontMetrics
+{
+  public:
+    // 1 = advances one em, 0 = does not or the font has no glyph for it,
+    // -1 = the font could not be measured.
+    int AdvancesOneEm(const std::wstring &family, uint32_t cp)
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        Face &face = GetFace(family);
+        if (!face.face)
+            return face.found ? -1 : 0;
+
+        auto it = face.oneEm.find(cp);
+        if (it != face.oneEm.end())
+            return it->second;
+
+        UINT16 glyph = 0;
+        DWRITE_GLYPH_METRICS gm = {};
+        const UINT32 cp32 = cp;
+        bool oneEm = SUCCEEDED(face.face->GetGlyphIndices(&cp32, 1, &glyph)) && glyph != 0 &&
+                     SUCCEEDED(face.face->GetDesignGlyphMetrics(&glyph, 1, &gm, FALSE)) &&
+                     gm.advanceWidth == face.unitsPerEm;
+        face.oneEm.emplace(cp, oneEm);
+        return oneEm;
+    }
+
+  private:
+    struct Face
+    {
+        CComPtr<IDWriteFontFace> face;
+        UINT16 unitsPerEm = 0;
+        // False when DirectWrite has no such family: the renderer would draw
+        // with a substitute whose metrics are unknown.
+        bool found = true;
+        std::unordered_map<uint32_t, bool> oneEm;
+    };
+
+    Face &GetFace(const std::wstring &family)
+    {
+        auto it = m_faces.find(family);
+        if (it != m_faces.end())
+            return it->second;
+
+        Face &face = m_faces[family];
+        if (!m_factoryTried)
+        {
+            m_factoryTried = true;
+            DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+                                reinterpret_cast<IUnknown **>(&m_factory));
+        }
+        CComPtr<IDWriteFontCollection> fonts;
+        if (!m_factory || FAILED(m_factory->GetSystemFontCollection(&fonts)))
+            return face;
+
+        UINT32 index = 0;
+        BOOL exists = FALSE;
+        CComPtr<IDWriteFontFamily> fontFamily;
+        CComPtr<IDWriteFont> font;
+        CComPtr<IDWriteFontFace> fontFace;
+        if (FAILED(fonts->FindFamilyName(family.c_str(), &index, &exists)))
+            return face;
+        if (!exists)
+        {
+            face.found = false;
+            return face;
+        }
+        if (FAILED(fonts->GetFontFamily(index, &fontFamily)) ||
+            FAILED(fontFamily->GetFirstMatchingFont(DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                                                    DWRITE_FONT_STYLE_NORMAL, &font)) ||
+            FAILED(font->CreateFontFace(&fontFace)))
+            return face;
+
+        DWRITE_FONT_METRICS metrics = {};
+        fontFace->GetMetrics(&metrics);
+        face.face = fontFace;
+        face.unitsPerEm = metrics.designUnitsPerEm;
+        return face;
+    }
+
+    std::mutex m_lock;
+    bool m_factoryTried = false;
+    CComPtr<IDWriteFactory> m_factory;
+    std::map<std::wstring, Face> m_faces;
+};
+
+bool AribGlyphAdvancesOneEm(const std::string &fontName, const char *u8str)
+{
+    // One code point per cell: a sequence such as a base character followed by
+    // a variation selector is shaped by the renderer, not measured here.
+    uint32_t cp = DecodeFirstUTF8Codepoint(u8str);
+    if (cp == 0 || u8str[cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4] != '\0')
+        return false;
+
+    // A nonspacing mark has its advance taken away when the renderer shapes it,
+    // whatever the font's own metrics say.
+    WORD type = 0;
+    const WCHAR wc = (WCHAR)cp;
+    if (cp < 0x10000 && GetStringTypeW(CT_CTYPE3, &wc, 1, &type) && (type & C3_NONSPACING))
+        return false;
+
+    static AribFontMetrics metrics;
+    std::wstring family = L"MS Gothic";
+    if (!fontName.empty())
+    {
+        int len = MultiByteToWideChar(CP_UTF8, 0, fontName.c_str(), -1, nullptr, 0);
+        if (len > 1)
+        {
+            family.resize(len - 1);
+            MultiByteToWideChar(CP_UTF8, 0, fontName.c_str(), -1, &family[0], len);
+        }
+    }
+    int oneEm = metrics.AdvancesOneEm(family, cp);
+    return oneEm < 0 ? IsUnicodeFixedFullwidthGlyph(cp) : oneEm != 0;
+}
+
+static bool ShouldStretchASSGlyph(const AribCaptionSettings &settings, const aribcc_caption_char_t &ch, uint32_t cp)
 {
     if (settings.stretchScale == 100 || settings.stretchChars.empty() || ch.type == ARIBCC_CHARTYPE_DRCS)
         return false;
 
-    uint32_t cp = DecodeFirstUTF8Codepoint(ch.u8str);
     return cp != 0 && std::find(settings.stretchChars.begin(), settings.stretchChars.end(), cp) != settings.stretchChars.end();
 }
 
@@ -1076,12 +1196,12 @@ static void BuildASSCharParts(const aribcc_caption_t &caption,
                   ? (int)(scaledH * 1080.0 / caption.plane_height) : 0;
     if (assFs > 0) { char b[32]; snprintf(b, sizeof(b), "{\\fs%d}", assFs); style += b; }
     float effectiveHScale = ch.char_horizontal_scale;
-    bool halfwidth = IsUnicodeHalfwidthGlyph(ch);
+    uint32_t cp = DecodeFirstUTF8Codepoint(ch.u8str);
     bool needsGlyphSquish = ch.type != ARIBCC_CHARTYPE_DRCS &&
                             effectiveHScale < 0.99f &&
-                            !halfwidth;
+                            !IsUnicodeHalfwidthGlyph(cp);
     int fscx = needsGlyphSquish ? (int)std::lround(effectiveHScale * 100.0f) : 100;
-    if (ShouldStretchASSGlyph(settings, ch))
+    if (ShouldStretchASSGlyph(settings, ch, cp))
         fscx = (int)std::lround((double)fscx * settings.stretchScale / 100.0);
     if (fscx != 100)
     {
@@ -1108,13 +1228,12 @@ static void BuildASSCharParts(const aribcc_caption_t &caption,
     else if (ch.u8str[0] != '\0')
         AppendASSEscapedText(glyph, ch.u8str);
 
-    uint32_t cp = DecodeFirstUTF8Codepoint(ch.u8str);
     out.assFs = assFs;
-    // A full width glyph advances exactly one em in any Japanese font, so its
-    // place inside a run can be reproduced with \fsp. Half width, horizontally
-    // scaled, DRCS and symbol cells depend on font metrics and stay one event each.
-    out.mergeable = ch.type != ARIBCC_CHARTYPE_DRCS && IsUnicodeFixedFullwidthGlyph(cp) &&
-                    fscx == 100 && assFs > 0;
+    // A glyph that advances exactly one em in the caption font keeps its place
+    // inside a run reproduced with \fsp. Narrower or wider glyphs, glyphs the
+    // font lacks, horizontally scaled and DRCS cells stay one event each.
+    out.mergeable = ch.type != ARIBCC_CHARTYPE_DRCS && fscx == 100 && assFs > 0 &&
+                    AribGlyphAdvancesOneEm(settings.fontName, ch.u8str);
     // A blank cell paints nothing of its own; its background rect is a separate
     // event, so it can be dropped instead of costing one more ASS event.
     out.blank = ch.type != ARIBCC_CHARTYPE_DRCS && !underlined && (cp == 0x20 || cp == 0x3000);
