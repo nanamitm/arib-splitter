@@ -26,6 +26,8 @@
 #include "H264Nalu.h"
 #include <memory>
 
+extern void AribDbgLog(const char *fmt, ...);
+
 #pragma warning(push)
 #pragma warning(disable : 4101)
 #pragma warning(disable : 5033)
@@ -531,12 +533,22 @@ HRESULT CStreamParser::ParsePlanarPCM(Packet *pPacket)
     const int nBytesPerChannel = nBPS / 8;
     if (nChannels == 0 || nBytesPerChannel == 0 || nBPS % 8 != 0 ||
         pPacket->GetDataSize() % (nChannels * nBytesPerChannel) != 0)
+    {
+        // Dropped rather than interleaved past the end of the buffer. Logged so
+        // an audio gap can be traced back to the packet that caused it.
+        AribDbgLog("[ARIB] planar PCM packet dropped: stream=%lu size=%d channels=%u bits=%u start=%lld\n",
+                   pPacket->StreamId, pPacket->GetDataSize(), (unsigned)nChannels, (unsigned)nBPS,
+                   (long long)pPacket->rtStart);
         return E_INVALIDARG;
+    }
 
     std::unique_ptr<Packet> out(new Packet());
     out->CopyProperties(pPacket);
     if (out->SetDataSize(pPacket->GetDataSize()) < 0)
+    {
+        AribDbgLog("[ARIB] planar PCM packet dropped: out of memory for %d bytes\n", pPacket->GetDataSize());
         return E_OUTOFMEMORY;
+    }
 
     int nAudioBlocks = pPacket->GetDataSize() / nChannels;
     BYTE *out_data = out->GetData();
