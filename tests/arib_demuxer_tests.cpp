@@ -197,14 +197,13 @@ static void timelineTests(ILAVFSettingsInternal *settings)
         Demuxer d(&lock, settings, f);
         auto events = drain(d, f);
         check(!events.empty(), "caption handed over as A/V advances");
-        check(events.front().readAt == 4, "caption delivered once A/V passes the commit guard");
+        check(events.front().readAt == 5, "caption shorter than the commit interval waits for the clear");
         check(events.front().start == 0, "caption starts at its own timestamp");
         std::map<std::string, REFERENCE_TIME> ends;
         for (const auto &e : events)
         {
             const auto payload = e.data.substr(e.data.find(','));
-            check(e.start == ends[payload], "clear leaves contiguous caption intervals");
-            check(e.stop <= 6250000, "no interval crosses the clear");
+            check(e.start == 0 && e.stop == 6250000, "short caption is sent as a single batch");
             ends[payload] = e.stop;
         }
         for (const auto &end : ends)
@@ -212,31 +211,32 @@ static void timelineTests(ILAVFSettingsInternal *settings)
         check(d.pendingEmpty(), "clear removes pending caption");
     }
     check(f.live == 0, "all caption and A/V buffers released");
-    // A/V is muxed 820ms ahead of the captions: the clear at 625ms is read only
-    // once A/V has reached 1440ms. Nothing sent before it may cross 625ms.
+    // A/V is muxed 820ms ahead of the captions: the clear at 8625ms is read only
+    // once A/V has reached 9440ms. Nothing sent before it may cross 8625ms.
     Feed leading;
     for (int ms = 0; ms <= 800; ms += 20)
         leading.samples.push_back({1, ms, {0, 0, 0, 0}});
     leading.samples.push_back({0, 0, textPES()});
-    for (int ms = 820; ms <= 1420; ms += 20)
+    for (int ms = 820; ms <= 9420; ms += 20)
         leading.samples.push_back({1, ms, {0, 0, 0, 0}});
-    leading.samples.push_back({0, 625, pes({0x0c})});
-    for (int ms = 1440; ms <= 2000; ms += 20)
+    leading.samples.push_back({0, 8625, pes({0x0c})});
+    for (int ms = 9440; ms <= 10000; ms += 20)
         leading.samples.push_back({1, ms, {0, 0, 0, 0}});
     {
         Demuxer d(&lock, settings, leading);
         auto events = drain(d, leading);
-        check(!events.empty(), "caption delivered while A/V leads it");
+        check(events.size() > 1 && events.front().readAt < 41 + 431,
+              "caption intervals delivered before the clear while A/V leads it");
         std::map<std::string, REFERENCE_TIME> ends;
         for (const auto &e : events)
         {
             const auto payload = e.data.substr(e.data.find(','));
             check(e.start == ends[payload], "leading A/V keeps caption intervals contiguous");
-            check(e.stop <= 6250000, "leading A/V does not commit past the clear");
+            check(e.stop <= 86250000, "leading A/V does not commit past the clear");
             ends[payload] = e.stop;
         }
         for (const auto &end : ends)
-            check(end.second == 6250000, "clear truncates the caption exactly despite leading A/V");
+            check(end.second == 86250000, "clear truncates the caption exactly despite leading A/V");
         check(d.pendingEmpty(), "clear removes pending caption with leading A/V");
     }
     check(leading.live == 0, "leading A/V buffers released");
@@ -365,8 +365,8 @@ static void timelineTests(ILAVFSettingsInternal *settings)
             check(d.GetNextPacket(&p) == S_FALSE && !p, "sparse caption starts pending");
             d.delayPending(delay);
             const auto events = drain(d, sparse);
-            check(!events.empty() && events.front().readAt <= 21,
-                  "sparse caption delivered within the commit guard plus 100ms of A/V");
+            check(!events.empty() && events.front().readAt <= 266,
+                  "sparse caption delivered within the commit guard plus one interval of A/V");
             std::map<std::string, REFERENCE_TIME> ends;
             std::set<std::string> readOrders;
             for (const auto &e : events)

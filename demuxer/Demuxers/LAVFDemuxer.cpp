@@ -702,10 +702,15 @@ static void RenumberASSReadOrder(Packet *packet, LONG readOrder)
 }
 
 
-// Commit short, non-overlapping intervals as the media advances. A/V queues
-// cannot guarantee ten seconds of read-ahead, and a broadcast need not send
-// another caption PES while an indefinite caption remains visible.
-static constexpr REFERENCE_TIME kAribCaptionCommitInterval = 100LL * 10000LL;
+// Commit non-overlapping intervals of at least this length as the media
+// advances. A/V queues cannot guarantee ten seconds of read-ahead, and a
+// broadcast need not send another caption PES while an indefinite caption
+// remains visible. Each interval re-sends every region of the caption, and a
+// renderer can composite a frame from a batch it has only half received and
+// keep showing it (MPC-BE's renderer was seen dropping a background box this
+// way), so a caption shorter than this, which is most of them, is still sent as
+// one batch.
+static constexpr REFERENCE_TIME kAribCaptionCommitInterval = 5000LL * 10000LL;
 
 // A/V is muxed ahead of captions, so the latest A/V timestamp read can be past
 // the PTS of the next caption PES. Commit only up to the A/V time minus the
