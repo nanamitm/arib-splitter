@@ -1,0 +1,6 @@
+# clangd reads compile_commands.json (tools\gen_compile_commands.ps1) for the
+# MSVC flags. FFmpeg's internal headers, which LAVAudio includes from C++, still
+# declare "register" variables; MSVC ignores the keyword, but clang rejects it
+# in C++17.
+CompileFlags:
+  Add: [-Wno-register]
