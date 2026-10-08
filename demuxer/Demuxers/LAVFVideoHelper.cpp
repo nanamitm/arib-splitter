@@ -557,9 +557,11 @@ HRESULT CLAVFVideoHelper::ProcessHEVCExtradata(BYTE *extradata, int extradata_si
 
 HRESULT CLAVFVideoHelper::ProcessVVCExtradata(BYTE *extradata, int extradata_size, MPEG2VIDEOINFO *mp2vi)
 {
-    if (extradata[0] || extradata[1] || extradata[2] > 1 && extradata_size > 25)
+    // A VVC decoder configuration record, unlike Annex B, starts with a non-zero
+    // byte holding LengthSizeMinusOne in bits 1-2 (as FFmpeg's cbs_h266 reads it).
+    if (extradata && extradata_size > 0 && extradata[0])
     {
-        mp2vi->dwFlags = (extradata[21] & 3) + 1;
+        mp2vi->dwFlags = ((extradata[0] >> 1) & 3) + 1;
     }
     return -1;
 }

@@ -17,6 +17,7 @@
 #include "FontInstaller.h"
 #include "DSMResourceBag.h"
 #include "LAVFDemuxer.h"
+#include "LAVFVideoHelper.h"
 extern "C"
 {
 #include "libavformat/demux.h"
@@ -501,6 +502,34 @@ static void seekableTests(ILAVFSettingsInternal *settings)
     format.read_seek = nullptr;
     puts("PASS: seekability from I/O, demuxer seek and duration");
 }
+// NAL length size read from HEVC and VVC configuration records. Annex B and
+// records too short to hold the field leave it unset.
+static DWORD nalLengthSize(bool vvc, std::vector<BYTE> extradata)
+{
+    MPEG2VIDEOINFO mp2vi = {};
+    // FFmpeg pads extradata, so a short record still has readable zeros after it.
+    extradata.resize(extradata.size() + AV_INPUT_BUFFER_PADDING_SIZE);
+    const int size = static_cast<int>(extradata.size()) - AV_INPUT_BUFFER_PADDING_SIZE;
+    if (vvc)
+        g_VideoHelper.ProcessVVCExtradata(extradata.data(), size, &mp2vi);
+    else
+        g_VideoHelper.ProcessHEVCExtradata(extradata.data(), size, &mp2vi);
+    return mp2vi.dwFlags;
+}
+static void videoHelperTests()
+{
+    std::vector<BYTE> hevc(23);
+    hevc[0] = 1;
+    hevc[21] = 0xfc | 1;
+    check(nalLengthSize(false, hevc) == 2, "23-byte HEVC record gives its NAL length size");
+    hevc.resize(22);
+    check(nalLengthSize(false, hevc) == 0, "HEVC record too short for the field is ignored");
+    check(nalLengthSize(false, {0, 0, 1, 0x40}) == 0, "HEVC Annex B has no NAL length size");
+    check(nalLengthSize(true, {0xff, 0}) == 4, "VVC record with LengthSizeMinusOne 3");
+    check(nalLengthSize(true, {0xfb, 0}) == 2, "VVC record with LengthSizeMinusOne 1");
+    check(nalLengthSize(true, {0, 0, 0, 1}) == 0, "VVC Annex B has no NAL length size");
+    puts("PASS: HEVC and VVC NAL length size from configuration records");
+}
 int wmain(int argc, wchar_t **argv)
 {
     try
@@ -523,6 +552,7 @@ int wmain(int argc, wchar_t **argv)
         timelineTests(settings);
         profileTests(settings);
         seekableTests(settings);
+        videoHelperTests();
         puts("ALL DEMUXER TESTS PASSED");
         return 0;
     }
