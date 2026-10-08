@@ -6,6 +6,9 @@ try {
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
     $vsRoot = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
     if (-not $vsRoot) { throw 'Visual Studio C++ tools were not found.' }
+    # VsDevCmd.bat runs vswhere.exe by name from its directory, which fails when
+    # NoDefaultCurrentDirectoryInExePath is set, so put that directory on PATH.
+    $env:PATH = (Split-Path -Parent $vswhere) + ';' + $env:PATH
     Import-Module (Join-Path $vsRoot 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll')
     Enter-VsDevShell -VsInstallPath $vsRoot -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
     New-Item -ItemType Directory -Force work | Out-Null
