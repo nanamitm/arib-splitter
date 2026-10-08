@@ -548,7 +548,7 @@ HRESULT CLAVFVideoHelper::ProcessH264MVCExtradata(BYTE *extradata, int extradata
 
 HRESULT CLAVFVideoHelper::ProcessHEVCExtradata(BYTE *extradata, int extradata_size, MPEG2VIDEOINFO *mp2vi)
 {
-    if (extradata[0] || extradata[1] || extradata[2] > 1 && extradata_size > 25)
+    if (extradata && extradata_size >= 23 && (extradata[0] || extradata[1] || extradata[2] > 1))
     {
         mp2vi->dwFlags = (extradata[21] & 3) + 1;
     }
