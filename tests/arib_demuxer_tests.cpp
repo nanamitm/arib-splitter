@@ -240,6 +240,55 @@ static void timelineTests(ILAVFSettingsInternal *settings)
         check(d.pendingEmpty(), "clear removes pending caption with leading A/V");
     }
     check(leading.live == 0, "leading A/V buffers released");
+    // A/V jumps back from 23s to 0s, as at a program boundary in a recording.
+    // The caption from the old timeline ends where A/V got on it, and the next
+    // caption is placed on the new timeline instead of behind the old maximum.
+    Feed discont;
+    for (int ms = 20000; ms <= 21000; ms += 20)
+        discont.samples.push_back({1, ms, {0, 0, 0, 0}});
+    discont.samples.push_back({0, 21000, textPES()});
+    for (int ms = 21020; ms <= 23000; ms += 20)
+        discont.samples.push_back({1, ms, {0, 0, 0, 0}});
+    for (int ms = 0; ms <= 1000; ms += 20)
+        discont.samples.push_back({1, ms, {0, 0, 0, 0}});
+    discont.samples.push_back({0, 1000, pes({0x0c, 0x0e, 0x42})});
+    for (int ms = 1020; ms <= 9000; ms += 20)
+        discont.samples.push_back({1, ms, {0, 0, 0, 0}});
+    {
+        Demuxer d(&lock, settings, discont);
+        auto events = drain(d, discont);
+        std::map<std::string, std::pair<REFERENCE_TIME, REFERENCE_TIME>> spans;
+        for (const auto &e : events)
+        {
+            const auto payload = e.data.substr(e.data.find(','));
+            auto it = spans.find(payload);
+            if (it == spans.end())
+                spans[payload] = {e.start, e.stop};
+            else
+            {
+                check(e.start == it->second.second, "caption intervals stay contiguous across a discontinuity");
+                it->second.second = e.stop;
+            }
+        }
+        check(spans.size() == 2, "captions on both sides of the discontinuity are delivered");
+        bool oldSeen = false, newSeen = false;
+        for (const auto &span : spans)
+        {
+            if (span.second.first == 210000000)
+            {
+                check(span.second.second == 230200000, "old caption ends where A/V got on the old timeline");
+                oldSeen = true;
+            }
+            if (span.second.first == 10000000)
+            {
+                check(span.second.second == 90200000, "new caption runs to the end of the new timeline");
+                newSeen = true;
+            }
+        }
+        check(oldSeen && newSeen, "captions keep their own timelines");
+        check(d.pendingEmpty(), "discontinuity test drains pending captions");
+    }
+    check(discont.live == 0, "discontinuity buffers released");
     Feed tail{{{0, 900, textPES()}}};
     {
         Demuxer d(&lock, settings, tail);

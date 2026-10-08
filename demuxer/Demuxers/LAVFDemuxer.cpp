@@ -718,6 +718,11 @@ static constexpr REFERENCE_TIME kAribCaptionCommitInterval = 5000LL * 10000LL;
 // a later clear or replacement never lands inside an interval already sent.
 static constexpr REFERENCE_TIME kAribCaptionCommitGuard = 300LL * 10000LL;
 
+// An A/V timestamp this far from the A/V clock is a discontinuity, such as a
+// program boundary in a recording, rather than interleaving. Matches the
+// splitter's MAX_PTS_SHIFT.
+static constexpr REFERENCE_TIME kAribTimestampDiscontinuity = 5000LL * 10000LL;
+
 // Commit the elapsed part of a pending caption on A/V progress or a subtitle
 // PES with no new caption. Keep the remaining part pending so a later clear or
 // replacement can still determine its exact end without retracting ASS events.
@@ -3394,7 +3399,23 @@ STDMETHODIMP CLAVFDemuxer::GetNextPacket(Packet **ppPacket)
         pPacket->StreamId == (DWORD)m_dActiveStreams[audio])
     {
         if (pPacket->rtStop != Packet::INVALID_TIME)
-            m_aribLatestAVTime = (std::max)(m_aribLatestAVTime, pPacket->rtStop);
+        {
+            if (m_aribLatestAVTime > 0 &&
+                _abs64(pPacket->rtStop - m_aribLatestAVTime) > kAribTimestampDiscontinuity)
+            {
+                // A/V moved to a new timeline. Hand over the pending captions up
+                // to where A/V got on the old one, and restart the clock and the
+                // measured caption leads, which would otherwise keep the old
+                // timeline's maximum and stall or misplace every later caption.
+                ARIB_LOG("[ARIB] A/V timestamp discontinuity %lld -> %lld\n",
+                         (long long)m_aribLatestAVTime, (long long)pPacket->rtStop);
+                DrainAribPendingCaptions(m_aribLatestAVTime);
+                m_aribCaptionLead.clear();
+                m_aribLatestAVTime = pPacket->rtStop;
+            }
+            else
+                m_aribLatestAVTime = (std::max)(m_aribLatestAVTime, pPacket->rtStop);
+        }
 
         // Advance every pending caption, including indefinite ones, without
         // depending on another subtitle PES. Resend may erase the current key.
