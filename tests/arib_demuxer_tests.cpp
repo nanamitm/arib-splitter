@@ -17,6 +17,7 @@
 #include "FontInstaller.h"
 #include "DSMResourceBag.h"
 #include "LAVFDemuxer.h"
+#include "AribCommon.h"
 #include "LAVFVideoHelper.h"
 extern "C"
 {
@@ -480,6 +481,61 @@ static void profileTests(ILAVFSettingsInternal *settings)
     check(f.live == 0, "placeholder packet ownership");
     puts("PASS: Profile A/C captions and superimpose, placeholder takeover");
 }
+// Text of the caption events, without the ReadOrder/Layer/Style prefix.
+static std::vector<std::string> eventTexts(const std::vector<Event> &events)
+{
+    std::vector<std::string> texts;
+    for (const auto &e : events)
+    {
+        size_t at = 0;
+        for (int field = 0; field < 8 && at != std::string::npos; ++field)
+            at = e.data.find(',', at) + 1;
+        texts.push_back(e.data.substr(at));
+    }
+    return texts;
+}
+static bool anyContains(const std::vector<std::string> &texts, const char *needle)
+{
+    return std::any_of(texts.begin(), texts.end(),
+                       [needle](const std::string &t) { return t.find(needle) != std::string::npos; });
+}
+static void glyphRunTests(ILAVFSettingsInternal *settings)
+{
+    // U+3042, U+301C and U+2192 are one em in MS Gothic; U+266C is not in it.
+    check(AribGlyphAdvancesOneEm("", "\xE3\x81\x82"), "kana advances one em");
+    check(AribGlyphAdvancesOneEm("", "\xE3\x80\x9C"), "wave dash advances one em");
+    check(AribGlyphAdvancesOneEm("", "\xE2\x86\x92"), "arrow the font draws one em wide merges");
+    check(!AribGlyphAdvancesOneEm("", "\xE2\x99\xAC"), "symbol missing from the font does not merge");
+    check(!AribGlyphAdvancesOneEm("", "A"), "half width glyph does not merge");
+    check(!AribGlyphAdvancesOneEm("", "\xE3\x82\x99"), "combining sound mark does not merge");
+    check(!AribGlyphAdvancesOneEm("", "\xE3\x81\x82\xEF\xB8\x80"), "cell of several code points does not merge");
+    check(!AribGlyphAdvancesOneEm("", ""), "empty cell does not merge");
+    check(AribGlyphAdvancesOneEm("MS Gothic", "\xE3\x81\xA3"), "small kana is one em in a monospaced font");
+    check(!AribGlyphAdvancesOneEm("MS PGothic", "\xE3\x81\xA3"), "small kana is narrower in a proportional font");
+    check(!AribGlyphAdvancesOneEm("No Such Caption Font", "\xE3\x81\x82"), "unknown font does not merge");
+
+    // The "U+266C U+301C" line that was drawn with the wave dash pulled onto the
+    // note: the note is placed on its own cell, the rest of the line is one run.
+    CCritSec lock;
+    Feed f{{{0, 0, pes({0x0c, 0x22, 0x7c, 0x21, 0x41, 0x24, 0x22, 0x24, 0x24})},
+            {1, 250, {0, 0, 0, 0}},
+            {0, 500, pes({0x0c})},
+            {1, 1000, {0, 0, 0, 0}}}};
+    {
+        Demuxer d(&lock, settings, f);
+        auto texts = eventTexts(drain(d, f));
+        check(!texts.empty(), "glyph run caption decodes");
+        check(!anyContains(texts, "\xE2\x99\xAC\xE3\x80\x9C"), "note is not merged with the next glyph");
+        check(std::any_of(texts.begin(), texts.end(),
+                          [](const std::string &t) {
+                              return t.size() >= 3 && t.compare(t.size() - 3, 3, "\xE2\x99\xAC") == 0;
+                          }),
+              "note is an event of its own");
+        check(anyContains(texts, "}\xE3\x80\x9C\xE3\x81\x82\xE3\x81\x84"), "one em glyphs after the note stay one run");
+    }
+    check(f.live == 0, "glyph run packet ownership");
+    puts("PASS: caption glyph runs merge only glyphs one em wide in the caption font");
+}
 static int seekStub(AVFormatContext *, int, int64_t, int)
 {
     return 0;
@@ -553,6 +609,7 @@ int wmain(int argc, wchar_t **argv)
         settings->SetRuntimeConfig(TRUE);
         timelineTests(settings);
         profileTests(settings);
+        glyphRunTests(settings);
         seekableTests(settings);
         videoHelperTests();
         puts("ALL DEMUXER TESTS PASSED");

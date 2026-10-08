@@ -14,7 +14,9 @@ against the production objects, and fails on the first failing test. Use
   the real `GetNextPacket()` using a deterministic FFmpeg input format. It checks
   caption hand-over on replacement, hold-interval re-sends, clear timing, EOF,
   explicit waits, flushing, Profile A/C, caption/superimpose selection, and
-  buffer reference release.
+  buffer reference release. It also checks which caption cells are merged into
+  one ASS event: only glyphs one em wide in the caption font. These checks
+  measure MS Gothic and MS PGothic, so they need the Japanese fonts installed.
 - `registry_tests.cpp` runs the production registration helpers with HKCR and
   HKLM redirected to temporary HKCU keys. It checks restoration, repeat install,
   absent mappings, and another filter taking ownership. System filter mappings
