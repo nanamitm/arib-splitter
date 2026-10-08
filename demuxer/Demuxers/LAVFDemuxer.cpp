@@ -3615,6 +3615,21 @@ STDMETHODIMP CLAVFDemuxer::Reset()
     return SeekByte(0, AVSEEK_FLAG_ANY);
 }
 
+bool CLAVFDemuxer::IsSeekable() const
+{
+    if (!m_avFormat)
+        return true;
+
+    // FFmpeg's generic seek, which MPEG-TS relies on, needs seekable I/O.
+    if (m_avFormat->pb && m_avFormat->pb->seekable)
+        return true;
+
+    // A demuxer with its own seek (RTSP, HLS) can seek without seekable I/O,
+    // but not in a live stream, which has no duration.
+    const FFInputFormat *format = m_avFormat->iformat ? ffifmt(m_avFormat->iformat) : nullptr;
+    return format && (format->read_seek || format->read_seek2) && m_avFormat->duration != AV_NOPTS_VALUE;
+}
+
 const char *CLAVFDemuxer::GetContainerFormat() const
 {
     return m_pszInputFormat;

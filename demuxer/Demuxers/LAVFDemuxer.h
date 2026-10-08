@@ -81,7 +81,7 @@ class CLAVFDemuxer
     STDMETHODIMP Reset();
     const char *GetContainerFormat() const;
     virtual DWORD GetContainerFlags() { return m_bTSDiscont ? LAVFMT_TS_DISCONT : 0; }
-    virtual bool IsSeekable() const { return !m_avFormat || !m_avFormat->pb || m_avFormat->pb->seekable; }
+    virtual bool IsSeekable() const;
 
     STDMETHODIMP SetTitle(int idx);
     STDMETHODIMP_(int) GetTitle();

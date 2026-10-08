@@ -477,6 +477,30 @@ static void profileTests(ILAVFSettingsInternal *settings)
     check(f.live == 0, "placeholder packet ownership");
     puts("PASS: Profile A/C captions and superimpose, placeholder takeover");
 }
+static int seekStub(AVFormatContext *, int, int64_t, int)
+{
+    return 0;
+}
+// The test format has no I/O context, like RTSP. Whether a failed seek leaves
+// playback running depends on the demuxer's own seek and a known duration.
+static void seekableTests(ILAVFSettingsInternal *settings)
+{
+    CCritSec lock;
+    Feed f;
+    {
+        Demuxer d(&lock, settings, f);
+        check(!d.IsSeekable(), "format without I/O or its own seek is unseekable");
+    }
+    format.read_seek = seekStub;
+    {
+        Demuxer d(&lock, settings, f);
+        check(d.IsSeekable(), "format with its own seek and a duration is seekable");
+        d.unknownDuration();
+        check(!d.IsSeekable(), "live stream with its own seek but no duration is unseekable");
+    }
+    format.read_seek = nullptr;
+    puts("PASS: seekability from I/O, demuxer seek and duration");
+}
 int wmain(int argc, wchar_t **argv)
 {
     try
@@ -498,6 +522,7 @@ int wmain(int argc, wchar_t **argv)
         settings->SetRuntimeConfig(TRUE);
         timelineTests(settings);
         profileTests(settings);
+        seekableTests(settings);
         puts("ALL DEMUXER TESTS PASSED");
         return 0;
     }
