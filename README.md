@@ -66,7 +66,19 @@ The project uses these submodules:
 ## Build
 
 The current development and release build targets Windows x64 only and has
-been tested with Visual Studio/MSBuild.
+been tested with Visual Studio/MSBuild. The filters require Windows 7 or later,
+matching FFmpeg.
+
+The FFmpeg DLLs are built with `build_ffmpeg.sh` from an MSYS2 MINGW64 shell:
+
+```sh
+./build_ffmpeg.sh x64
+```
+
+The script links zlib statically even when MSYS2 also provides `libz.dll.a`,
+and fails if an FFmpeg DLL would import a MinGW runtime DLL that the release
+package does not ship (only `libwinpthread-1.dll` is shipped). Copy
+`/mingw64/bin/libwinpthread-1.dll` into `bin_x64\` before packaging.
 
 Build libaribcaption first if needed:
 
@@ -137,6 +149,10 @@ The package is written under `dist\` and includes `ARIBSplitter.ax`,
 `ARIBAudio.ax`, required runtime DLLs, install/uninstall scripts, `README.md`,
 `COPYING`, and a small `PACKAGE.txt` manifest.
 
+Before writing the zip, the script loads each `.ax` from the package folder
+with only that folder and System32 on the DLL search path, so a runtime DLL
+missing from the package fails the build instead of the installation.
+
 ## ARIB dual mono audio
 
 Japanese bilingual programs are transmitted as a single AAC stream carrying two
@@ -204,6 +220,18 @@ Release builds are quiet by default. Set `DebugLogPath` to write ARIBSplitter
 diagnostic logs to a file. Set `VerboseLog=1` to also emit those logs through
 `OutputDebugString` for DebugView or an attached debugger. Debug builds always
 emit `OutputDebugString` logs.
+
+To check caption timing without a player, `tools\arib_dump.ps1` runs the
+demuxer of the x64 Release build on a recording and prints every caption event
+sent to the subtitle pin, with its start and stop times and how far A/V had
+been read when it was sent:
+
+```powershell
+.\tools\arib_dump.ps1 -InputFile recording.ts -Seconds 135 -Output dump.txt -Ini ARIBSplitter.ini -Log arib.log
+```
+
+`-Ini` selects the caption settings (the repository default when omitted) and
+`-Log` writes the debug log described above.
 
 ### Vertical text
 
