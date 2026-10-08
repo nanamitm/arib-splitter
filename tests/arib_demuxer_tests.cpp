@@ -212,32 +212,34 @@ static void timelineTests(ILAVFSettingsInternal *settings)
         check(d.pendingEmpty(), "clear removes pending caption");
     }
     check(f.live == 0, "all caption and A/V buffers released");
-    // A/V is muxed 820ms ahead of the captions: the clear at 8625ms is read only
-    // once A/V has reached 9440ms. Nothing sent before it may cross 8625ms.
+    // A/V is muxed 820ms ahead of the captions: the clear at 9800ms is read only
+    // once A/V has reached 10620ms. Committing against the A/V time alone would
+    // send a 5-10s interval across the clear; with the lead taken off, only the
+    // first 5s interval is committed before it.
     Feed leading;
     for (int ms = 0; ms <= 800; ms += 20)
         leading.samples.push_back({1, ms, {0, 0, 0, 0}});
     leading.samples.push_back({0, 0, textPES()});
-    for (int ms = 820; ms <= 9420; ms += 20)
+    for (int ms = 820; ms <= 10600; ms += 20)
         leading.samples.push_back({1, ms, {0, 0, 0, 0}});
-    leading.samples.push_back({0, 8625, pes({0x0c})});
-    for (int ms = 9440; ms <= 10000; ms += 20)
+    leading.samples.push_back({0, 9800, pes({0x0c})});
+    for (int ms = 10620; ms <= 11200; ms += 20)
         leading.samples.push_back({1, ms, {0, 0, 0, 0}});
     {
         Demuxer d(&lock, settings, leading);
         auto events = drain(d, leading);
-        check(events.size() > 1 && events.front().readAt < 41 + 431,
+        check(events.size() > 1 && events.front().readAt < 41 + 1 + 490,
               "caption intervals delivered before the clear while A/V leads it");
         std::map<std::string, REFERENCE_TIME> ends;
         for (const auto &e : events)
         {
             const auto payload = e.data.substr(e.data.find(','));
             check(e.start == ends[payload], "leading A/V keeps caption intervals contiguous");
-            check(e.stop <= 86250000, "leading A/V does not commit past the clear");
+            check(e.stop <= 98000000, "leading A/V does not commit past the clear");
             ends[payload] = e.stop;
         }
         for (const auto &end : ends)
-            check(end.second == 86250000, "clear truncates the caption exactly despite leading A/V");
+            check(end.second == 98000000, "clear truncates the caption exactly despite leading A/V");
         check(d.pendingEmpty(), "clear removes pending caption with leading A/V");
     }
     check(leading.live == 0, "leading A/V buffers released");
