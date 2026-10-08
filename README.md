@@ -86,14 +86,15 @@ Build libaribcaption first if needed:
 build_libaribcaption.bat
 ```
 
-Then build `demuxer\LAVSplitter\LAVSplitter.vcxproj` directly with MSBuild.
-Building the whole `ARIBSplitter.sln` is not required for ARIBSplitter releases.
-
-Example:
+Then build `ARIBSplitter.sln` for Release|x64. A release needs both
+`ARIBSplitter.ax` and `ARIBAudio.ax`, so build the whole solution rather than
+`demuxer\LAVSplitter\LAVSplitter.vcxproj` alone:
 
 ```bat
-msbuild demuxer\LAVSplitter\LAVSplitter.vcxproj /m /p:Configuration=Release /p:Platform=x64 /p:SolutionDir=%CD%\
+msbuild ARIBSplitter.sln /m /p:Configuration=Release /p:Platform=x64
 ```
+
+`tests\run_tests.ps1` builds the solution the same way and then runs the tests.
 
 The x64 Release output is written under:
 
