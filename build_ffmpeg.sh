@@ -102,7 +102,7 @@ configure() (
     --disable-stripping             \
     --arch=${arch}"
 
-  EXTRA_CFLAGS="-fno-tree-vectorize -D_WIN32_WINNT=0x0600 -DWINVER=0x0600 -gdwarf-5"
+  EXTRA_CFLAGS="-fno-tree-vectorize -D_WIN32_WINNT=0x0601 -DWINVER=0x0601 -gdwarf-5"
   # -static-libgcc embeds the GCC SEH runtime into each DLL so the output does
   # not depend on libgcc_s_seh-1.dll.
   EXTRA_LDFLAGS="-static-libgcc"
