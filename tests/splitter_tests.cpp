@@ -165,6 +165,28 @@ struct SplitterTest : CLAVSplitter
         return m_rtStart == start && m_rtCurrent == start && m_rtNewStart == start && m_rtStop == stop &&
                m_rtNewStop == stop && m_bStopValid == stopValid;
     }
+    void useTimestampFilter(SeekDemuxer *demuxer, const std::vector<CLAVOutputPin *> &pins)
+    {
+        m_pDemuxer = demuxer;
+        m_pActivePins = pins;
+    }
+    void releaseTimestampFilter()
+    {
+        m_pActivePins.clear();
+        m_pDemuxer = nullptr;
+    }
+    // Runs one packet through the discontinuity filter and reports whether it
+    // asked for a discontinuity downstream.
+    REFERENCE_TIME filterTimestamp(CLAVOutputPin *pin, DWORD streamId, REFERENCE_TIME rt, bool &resetDownstream)
+    {
+        Packet packet;
+        packet.StreamId = streamId;
+        packet.rtStart = packet.rtStop = rt;
+        m_bDiscontinuitySent.insert(streamId);
+        FilterTimestampDiscontinuity(pin, &packet);
+        resetDownstream = m_bDiscontinuitySent.empty();
+        return packet.rtStart;
+    }
 };
 
 static void seekTests()
@@ -330,6 +352,105 @@ static void pcmTests(CLAVSplitter &filter)
     puts("PASS: mono passthrough, stereo/three-channel interleaving, 3000 PCM input buffer releases");
 }
 
+struct TimedPacket
+{
+    REFERENCE_TIME rt;
+    int stream;
+};
+
+// Video every frame and audio every AAC frame for 80 s from the segment start, in
+// timestamp order, with the audio left out between gapStart and gapEnd. Times
+// at or after jumpAt are moved by jump on both streams.
+static std::vector<TimedPacket> timedPackets(REFERENCE_TIME gapStart, REFERENCE_TIME gapEnd, REFERENCE_TIME jumpAt,
+                                             REFERENCE_TIME jump)
+{
+    const REFERENCE_TIME end = 800000000;
+    const REFERENCE_TIME frame = 333667, aacFrame = 213333;
+    std::vector<TimedPacket> packets;
+    for (REFERENCE_TIME rt = 0; rt < end; rt += frame)
+        packets.push_back({rt, 0});
+    for (REFERENCE_TIME rt = 0; rt < end; rt += aacFrame)
+        if (rt < gapStart || rt >= gapEnd)
+            packets.push_back({rt, 1});
+    std::stable_sort(packets.begin(), packets.end(),
+                     [](const TimedPacket &a, const TimedPacket &b) { return a.rt < b.rt; });
+    for (auto &packet : packets)
+        if (packet.rt >= jumpAt)
+            packet.rt += jump;
+    return packets;
+}
+
+static void timestampDiscontinuityTests()
+{
+    HRESULT hr = S_OK;
+    SplitterTest filter(&hr);
+    check(SUCCEEDED(hr), "construct timestamp filter splitter");
+    CMediaType mt;
+    mt.SetType(&MEDIATYPE_Audio);
+    mt.SetSubtype(&MEDIASUBTYPE_PCM);
+    mt.SetFormatType(&FORMAT_WaveFormatEx);
+    auto *wf = reinterpret_cast<WAVEFORMATEX *>(mt.AllocFormatBuffer(sizeof(WAVEFORMATEX)));
+    *wf = {};
+    wf->wFormatTag = WAVE_FORMAT_PCM;
+    wf->nChannels = 2;
+    wf->nSamplesPerSec = 48000;
+    wf->wBitsPerSample = 16;
+    wf->nBlockAlign = 4;
+    std::deque<CMediaType> types{mt};
+    auto *demuxer = new SeekDemuxer(&filter);
+    demuxer->AddRef();
+
+    auto run = [&](const std::vector<TimedPacket> &packets, std::vector<REFERENCE_TIME> &delivered, int &resets) {
+        HRESULT pinHr = S_OK;
+        ParserPinTest video(&filter, types, &pinHr), audio(&filter, types, &pinHr);
+        check(SUCCEEDED(pinHr), "construct timestamp filter pins");
+        CLAVOutputPin *pins[] = {&video, &audio};
+        filter.useTimestampFilter(demuxer, {&video, &audio});
+        delivered.clear();
+        resets = 0;
+        for (const auto &packet : packets)
+        {
+            bool reset = false;
+            delivered.push_back(filter.filterTimestamp(pins[packet.stream], packet.stream, packet.rt, reset));
+            resets += reset;
+        }
+        filter.releaseTimestampFilter();
+    };
+
+    // The commentary track of the recording that showed this: PID 0x111 left
+    // the PMT at 1801.728 s and came back at 1831.765 s while video went on;
+    // the packets here start 1780 s into that recording.
+    std::vector<REFERENCE_TIME> delivered;
+    int resets = 0;
+    auto packets = timedPackets(217280000, 517650000, _I64_MAX, 0);
+    run(packets, delivered, resets);
+    check(resets == 0, "a gap in one stream does not reset downstream");
+    for (size_t i = 0; i < packets.size(); ++i)
+        check(delivered[i] == packets[i].rt, "a gap in one stream leaves all timestamps unchanged");
+
+    // A program boundary moves every stream back by 1000 s. The streams must
+    // keep running on from where they were.
+    const REFERENCE_TIME jumpAt = 400000000, jump = -10000000000;
+    packets = timedPackets(_I64_MAX, _I64_MAX, jumpAt, jump);
+    run(packets, delivered, resets);
+    check(resets == 1, "a jump on all streams resets downstream once");
+    REFERENCE_TIME last[2] = {AV_NOPTS_VALUE, AV_NOPTS_VALUE};
+    for (size_t i = 0; i < packets.size(); ++i)
+    {
+        REFERENCE_TIME &prev = last[packets[i].stream];
+        // The stream that jumps first is lined up on its previous packet, so the
+        // others can land up to one of its frames early.
+        check(prev == AV_NOPTS_VALUE || _abs64(delivered[i] - prev) <= 333667,
+              "timestamps stay continuous across a jump on all streams");
+        prev = delivered[i];
+    }
+    check(last[0] > jumpAt + 300000000 && last[1] > jumpAt + 300000000,
+          "timestamps after a jump on all streams advance in real time");
+
+    demuxer->Release();
+    puts("PASS: a gap in one stream keeps timestamps, a jump on all streams is still smoothed over");
+}
+
 int main()
 {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -343,6 +464,7 @@ int main()
         seekTests();
         unseekableSeekTests();
         pcmTests(filter);
+        timestampDiscontinuityTests();
         puts("ALL SPLITTER TESTS PASSED");
     }
     catch (const std::exception &e)

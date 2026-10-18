@@ -896,6 +896,63 @@ HRESULT CLAVSplitter::DemuxNextPacket()
     return DeliverPacket(pPacket);
 }
 
+// Shift timestamps across a discontinuity so that the stream that jumped
+// carries on from where it was. A jump on one pin is only a discontinuity if it
+// also leaves the other A/V streams behind: an ARIB commentary track is dropped
+// from the PMT and comes back later, and its first packet after such a gap is on
+// time with the video. Treating that as a discontinuity shifts every stream by
+// the gap, and the streams then reset the shared offset against each other on
+// every packet.
+void CLAVSplitter::FilterTimestampDiscontinuity(CLAVOutputPin *pPin, Packet *pPacket)
+{
+    if (!pPin->IsSubtitlePin())
+    {
+        // Initialize on the first stream coming in
+        if (pPin->m_rtPrev == AV_NOPTS_VALUE && m_rtOffset == AV_NOPTS_VALUE)
+        {
+            pPin->m_rtPrev = 0;
+            m_rtOffset = 0;
+        }
+
+        REFERENCE_TIME rt = pPacket->rtStart + m_rtOffset;
+
+        if (pPin->m_rtPrev != AV_NOPTS_VALUE && _abs64(rt - pPin->m_rtPrev) > MAX_PTS_SHIFT)
+        {
+            bool bStreamGap = false;
+            for (CLAVOutputPin *pOther : m_pActivePins)
+            {
+                if (pOther != pPin && !pOther->IsSubtitlePin() && pOther->m_rtPrev != AV_NOPTS_VALUE &&
+                    _abs64(rt - pOther->m_rtPrev) <= MAX_PTS_SHIFT)
+                {
+                    bStreamGap = true;
+                    break;
+                }
+            }
+
+            if (bStreamGap)
+            {
+                DbgLog((LOG_TRACE, 10,
+                        L"::DeliverPacket(): gap in stream %d (prev: %I64d, now: %I64d), other streams are continuous",
+                        pPacket->StreamId, pPin->m_rtPrev, rt));
+            }
+            else
+            {
+                m_rtOffset += pPin->m_rtPrev - rt;
+                if (!(m_pDemuxer->GetContainerFlags() & LAVFMT_TS_DISCONT_NO_DOWNSTREAM))
+                    m_bDiscontinuitySent.clear();
+                DbgLog((LOG_TRACE, 10,
+                        L"::DeliverPacket(): MPEG-TS/PS discontinuity detected, adjusting offset to %I64d (stream: "
+                        L"%d, prev: %I64d, now: %I64d)",
+                        m_rtOffset, pPacket->StreamId, pPin->m_rtPrev, rt));
+            }
+        }
+    }
+    pPacket->rtStart += m_rtOffset;
+    pPacket->rtStop += m_rtOffset;
+
+    pPin->m_rtPrev = pPacket->rtStart;
+}
+
 HRESULT CLAVSplitter::DeliverPacket(Packet *pPacket)
 {
     HRESULT hr = S_FALSE;
@@ -966,34 +1023,7 @@ HRESULT CLAVSplitter::DeliverPacket(Packet *pPacket)
         // Filter PTS values
         // This will try to compensate for timestamp discontinuities in the stream
         if (m_pDemuxer->GetContainerFlags() & LAVFMT_TS_DISCONT)
-        {
-            if (!pPin->IsSubtitlePin())
-            {
-                // Initialize on the first stream coming in
-                if (pPin->m_rtPrev == AV_NOPTS_VALUE && m_rtOffset == AV_NOPTS_VALUE)
-                {
-                    pPin->m_rtPrev = 0;
-                    m_rtOffset = 0;
-                }
-
-                REFERENCE_TIME rt = pPacket->rtStart + m_rtOffset;
-
-                if (pPin->m_rtPrev != AV_NOPTS_VALUE && _abs64(rt - pPin->m_rtPrev) > MAX_PTS_SHIFT)
-                {
-                    m_rtOffset += pPin->m_rtPrev - rt;
-                    if (!(m_pDemuxer->GetContainerFlags() & LAVFMT_TS_DISCONT_NO_DOWNSTREAM))
-                        m_bDiscontinuitySent.clear();
-                    DbgLog((LOG_TRACE, 10,
-                            L"::DeliverPacket(): MPEG-TS/PS discontinuity detected, adjusting offset to %I64d (stream: "
-                            L"%d, prev: %I64d, now: %I64d)",
-                            m_rtOffset, pPacket->StreamId, pPin->m_rtPrev, rt));
-                }
-            }
-            pPacket->rtStart += m_rtOffset;
-            pPacket->rtStop += m_rtOffset;
-
-            pPin->m_rtPrev = pPacket->rtStart;
-        }
+            FilterTimestampDiscontinuity(pPin, pPacket);
 
         pPacket->rtStart = (REFERENCE_TIME)(pPacket->rtStart / m_dRate);
         pPacket->rtStop = (REFERENCE_TIME)(pPacket->rtStop / m_dRate);

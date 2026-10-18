@@ -247,6 +247,7 @@ class __declspec(uuid("1AA767C2-BF31-4791-B65A-474678685956")) CLAVSplitter
     HRESULT DemuxSeek(REFERENCE_TIME rtStart);
     HRESULT DemuxNextPacket();
     HRESULT DeliverPacket(Packet *pPacket);
+    void FilterTimestampDiscontinuity(CLAVOutputPin *pPin, Packet *pPacket);
 
     void DeliverBeginFlush();
     void DeliverEndFlush();
