@@ -22,6 +22,7 @@
 extern "C"
 {
 #include "libavformat/demux.h"
+#include "libavutil/crc.h"
 }
 CFactoryTemplate g_Templates[1] = {};
 int g_cTemplates = 0;
@@ -108,6 +109,17 @@ struct AribDemuxerTest : CLAVFDemuxer
         m_dActiveStreams[subpic] = 0;
         m_dActiveStreams[audio] = 1;
     }
+    // Takes over a context opened with FFmpeg's own mpegts demuxer.
+    AribDemuxerTest(CCritSec *lock, ILAVFSettingsInternal *settings, AVFormatContext *ts)
+        : CLAVFDemuxer(lock, settings)
+    {
+        m_avFormat = ts;
+        m_pszInputFormat = "mpegts";
+        m_bMPEGTS = TRUE;
+    }
+    HRESULT createStreams() { return CreateStreams(); }
+    const stream &audioStream(size_t i) const { return m_streams[audio].at(i); }
+    size_t audioCount() const { return m_streams[audio].size(); }
     void unknownDuration() { m_avFormat->duration = AV_NOPTS_VALUE; }
     void clearPending() { FlushAribPendingPackets(); }
     void delayPending(REFERENCE_TIME delay)
@@ -588,6 +600,147 @@ static void videoHelperTests()
     check(nalLengthSize(true, {0, 0, 0, 1}) == 0, "VVC Annex B has no NAL length size");
     puts("PASS: HEVC and VVC NAL length size from configuration records");
 }
+// A long form PSI section with its MPEG-2 CRC.
+static std::vector<uint8_t> section(uint8_t tableId, uint16_t id, uint8_t number, std::vector<uint8_t> body)
+{
+    const size_t length = 5 + body.size() + 4;
+    std::vector<uint8_t> s = {tableId, uint8_t(0xB0 | (length >> 8)), uint8_t(length), uint8_t(id >> 8), uint8_t(id),
+                              0xC1, number, 1};
+    s.insert(s.end(), body.begin(), body.end());
+    // FFmpeg's table gives the CRC byte swapped, so its low byte goes first.
+    const uint32_t crc = av_crc(av_crc_get_table(AV_CRC_32_IEEE), UINT32_MAX, s.data(), s.size());
+    for (int shift = 0; shift < 32; shift += 8)
+        s.push_back(uint8_t(crc >> shift));
+    return s;
+}
+// ARIB audio component descriptor (0xC4) of an AAC stereo component.
+static std::vector<uint8_t> audioComponent(uint8_t tag, bool main, std::vector<uint8_t> text)
+{
+    std::vector<uint8_t> d = {0xC4, uint8_t(9 + text.size()), 0xF2, 0x03, tag, 0x0F, 0xFF,
+                              uint8_t(main ? 0x6F : 0x2F), 'j', 'p', 'n'};
+    d.insert(d.end(), text.begin(), text.end());
+    return d;
+}
+// EIT present/following actual section with one event holding |descriptors|.
+static std::vector<uint8_t> eitSection(uint16_t serviceId, uint8_t number, std::vector<uint8_t> descriptors)
+{
+    std::vector<uint8_t> body = {0x7F, 0xE0, 0x7F, 0xE0, 1, 0x4E,
+                                 0x10, uint8_t(number), 0xE8, 0xB4, 0x23, 0x30, 0x00, 0x00, 0x30, 0x00};
+    body.push_back(uint8_t(0x80 | (descriptors.size() >> 8)));
+    body.push_back(uint8_t(descriptors.size()));
+    body.insert(body.end(), descriptors.begin(), descriptors.end());
+    return section(0x4E, serviceId, number, body);
+}
+struct TsBuffer
+{
+    std::vector<uint8_t> data;
+    std::map<int, int> cc;
+    size_t pos = 0;
+    void put(int pid, const std::vector<uint8_t> &sec)
+    {
+        std::vector<uint8_t> payload = {0}; // pointer_field
+        payload.insert(payload.end(), sec.begin(), sec.end());
+        for (size_t off = 0; off < payload.size(); off += 184)
+        {
+            uint8_t pkt[188];
+            memset(pkt, 0xFF, sizeof(pkt));
+            pkt[0] = 0x47;
+            pkt[1] = uint8_t((off == 0 ? 0x40 : 0) | (pid >> 8));
+            pkt[2] = uint8_t(pid);
+            pkt[3] = uint8_t(0x10 | (cc[pid]++ & 0x0F));
+            memcpy(pkt + 4, payload.data() + off, std::min<size_t>(184, payload.size() - off));
+            data.insert(data.end(), pkt, pkt + sizeof(pkt));
+        }
+    }
+};
+static int readTs(void *opaque, uint8_t *buf, int size)
+{
+    auto *ts = static_cast<TsBuffer *>(opaque);
+    const size_t n = std::min<size_t>(size, ts->data.size() - ts->pos);
+    if (n == 0)
+        return AVERROR_EOF;
+    memcpy(buf, ts->data.data() + ts->pos, n);
+    ts->pos += n;
+    return static_cast<int>(n);
+}
+static int64_t seekTs(void *opaque, int64_t offset, int whence)
+{
+    auto *ts = static_cast<TsBuffer *>(opaque);
+    if (whence == AVSEEK_SIZE)
+        return ts->data.size();
+    if ((whence & ~AVSEEK_FORCE) != SEEK_SET || offset < 0 || offset > (int64_t)ts->data.size())
+        return -1;
+    ts->pos = static_cast<size_t>(offset);
+    return offset;
+}
+// Audio track names and languages come from the EIT audio component
+// descriptors, matched to the streams by the PMT stream identifier descriptor.
+static void eitTests(ILAVFSettingsInternal *settings)
+{
+    const std::vector<uint8_t> japanese = {0x46, 0x7C, 0x4B, 0x5C, 0x38, 0x6C};
+    const std::vector<uint8_t> commentary = {0x46, 0x7C, 0x4B, 0x5C, 0x38, 0x6C, 0x21, 0x4A,
+                                             0x32, 0x72, 0x40, 0x62, 0x21, 0x4B};
+    check(AribDecodeString(commentary.data(), commentary.size()) == u8"日本語（解説）", "kanji SI text");
+    // GR hiragana, LS1 alphanumeric full and middle size, LS3R katakana.
+    const std::vector<uint8_t> kana = {0xA2, 0x0E, 0x41, 0x89, 0x41, 0x20, 0x1B, 0x7C, 0xA2};
+    check(AribDecodeString(kana.data(), kana.size()) == u8"あＡA ア", "hiragana, alphanumeric and MSZ SI text");
+
+    const uint16_t service = 0x0400, other = 0x0401;
+    TsBuffer ts;
+    ts.put(0x0000, section(0x00, 0x7FE0, 0, {0x04, 0x00, 0xE1, 0xF0}));
+    ts.put(0x01F0, section(0x02, service, 0,
+                           {0xE1, 0x10, 0xF0, 0x00,                               // PCR PID, no program info
+                            0x0F, 0xE1, 0x10, 0xF0, 0x03, 0x52, 0x01, 0x10,       // AAC, component tag 0x10
+                            0x0F, 0xE1, 0x11, 0xF0, 0x03, 0x52, 0x01, 0x11}));    // AAC, component tag 0x11
+    // The recording starts in the previous event, which has only the main
+    // audio; the recorded one, still the following event, adds commentary.
+    ts.put(0x0012, eitSection(service, 0, audioComponent(0x10, true, {})));
+    auto following = audioComponent(0x10, true, japanese);
+    auto second = audioComponent(0x11, false, commentary);
+    following.insert(following.end(), second.begin(), second.end());
+    const auto followingSection = eitSection(service, 1, following);
+    AribEITAudio parsed;
+    check(AribParseEITAudioComponents(followingSection.data(), followingSection.size(), service, parsed) &&
+              parsed.Find(1, 0x11) && parsed.Find(1, 0x11)->text == u8"日本語（解説）",
+          "EIT section parsed into audio components");
+    ts.put(0x0012, followingSection);
+    // A corrupt copy and another service's EIT must not rename the tracks.
+    auto corrupt = eitSection(service, 1, audioComponent(0x11, false, japanese));
+    corrupt.back() ^= 0xFF;
+    ts.put(0x0012, corrupt);
+    auto otherAudio = audioComponent(0x10, true, commentary);
+    second = audioComponent(0x11, false, japanese);
+    otherAudio.insert(otherAudio.end(), second.begin(), second.end());
+    ts.put(0x0012, eitSection(other, 0, otherAudio));
+    while (ts.data.size() < 64 * 188)
+        ts.put(0x1FFF, {});
+
+    const int bufferSize = 4096;
+    AVIOContext *pb = avio_alloc_context(static_cast<uint8_t *>(av_malloc(bufferSize)), bufferSize, 0, &ts, readTs,
+                                         nullptr, seekTs);
+    AVFormatContext *ctx = avformat_alloc_context();
+    ctx->pb = pb;
+    ctx->flags |= AVFMT_FLAG_CUSTOM_IO;
+    check(avformat_open_input(&ctx, nullptr, av_find_input_format("mpegts"), nullptr) == 0, "open synthetic TS");
+    check(avformat_find_stream_info(ctx, nullptr) >= 0, "probe synthetic TS");
+    {
+        CCritSec lock;
+        Demuxer d(&lock, settings, ctx);
+        check(d.createStreams() == S_OK, "create streams of synthetic TS");
+        check(d.audioCount() == 2, "both audio streams");
+        const auto &main = d.audioStream(0);
+        const auto &sub = d.audioStream(1);
+        check(main.trackName == u8"日本語", "main audio named from the following event");
+        check(sub.trackName == u8"日本語（解説）", "commentary named from the following event");
+        check(main.language == "jpn" && sub.language == "jpn", "audio language from the EIT");
+        check(sub.lcid == ProbeLangForLCID("jpn"), "audio LCID from the EIT language");
+        check(sub.streamInfo->codecInfo.find(u8"日本語（解説） [jpn]") != std::string::npos,
+              "stream selection name carries the EIT name");
+    }
+    av_freep(&pb->buffer);
+    avio_context_free(&pb);
+    puts("PASS: audio track names and languages from the EIT audio component descriptor");
+}
 int wmain(int argc, wchar_t **argv)
 {
     try
@@ -611,6 +764,7 @@ int wmain(int argc, wchar_t **argv)
         profileTests(settings);
         glyphRunTests(settings);
         seekableTests(settings);
+        eitTests(settings);
         videoHelperTests();
         puts("ALL DEMUXER TESTS PASSED");
         return 0;

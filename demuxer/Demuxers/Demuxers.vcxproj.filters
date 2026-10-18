@@ -59,6 +59,9 @@
     <ClCompile Include="BaseDemuxer.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="AribEIT.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="LAVFDemuxer.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>

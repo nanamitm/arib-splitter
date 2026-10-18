@@ -69,6 +69,10 @@
     <ClInclude Include="StreamInfo.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="AribEIT.cpp">
+      <!-- Includes FFmpeg internal.h, which clashes with stdafx.h -->
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="BaseDemuxer.cpp" />
     <ClCompile Include="BDDemuxer.cpp" />
     <ClCompile Include="ExtradataParser.cpp" />

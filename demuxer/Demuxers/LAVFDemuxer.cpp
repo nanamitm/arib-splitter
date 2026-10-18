@@ -4332,6 +4332,62 @@ STDMETHODIMP CLAVFDemuxer::AddStream(int streamId)
     return S_OK;
 }
 
+// Name the audio streams of an ARIB broadcast from the audio component
+// descriptors (0xC4) of the EIT, matched by the component tag of the PMT stream
+// identifier descriptor.
+void CLAVFDemuxer::SetAribAudioComponentNames()
+{
+    if (m_program >= m_avFormat->nb_programs)
+        return;
+    const AVProgram *program = m_avFormat->programs[m_program];
+
+    AribEITAudio eit;
+    if (!AribScanEIT(m_avFormat->pb, program->id, eit))
+        return;
+
+    std::vector<std::pair<AVStream *, int>> streams;
+    for (unsigned k = 0; k < program->nb_stream_indexes; ++k)
+    {
+        AVStream *st = m_avFormat->streams[program->stream_index[k]];
+        const int tag = AribStreamComponentTag(st);
+        if (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && tag >= 0)
+            streams.push_back({st, tag});
+    }
+
+    // A recording usually starts a little before its event, so the present
+    // event can still be the previous programme, which lacks an audio
+    // component (and its PMT the stream) the recorded one adds. Take the
+    // event that describes every audio stream, the present one first.
+    auto describesAll = [&](int section) {
+        if (eit.events[section].audio.empty())
+            return false;
+        for (const auto &s : streams)
+        {
+            if (!eit.Find(section, s.second))
+                return false;
+        }
+        return true;
+    };
+    const int section = describesAll(0) ? 0 : describesAll(1) ? 1 : -1;
+
+    for (const auto &s : streams)
+    {
+        AVStream *st = s.first;
+        const int tag = s.second;
+        const AribAudioComponent *c = section >= 0 ? eit.Find(section, tag) : eit.Find(0, tag);
+        if (!c && section < 0)
+            c = eit.Find(1, tag);
+        if (!c)
+            continue;
+        ARIB_LOG("[ARIB] EIT audio component: stream=%d tag=0x%02x event=%d type=0x%02x lang=%s text=%s\n",
+                 st->index, tag, section, c->componentType, c->language.c_str(), c->text.c_str());
+        if (!c->language.empty() && !get_stream_language(st))
+            av_dict_set(&st->metadata, "language", c->language.c_str(), 0);
+        if (!c->text.empty() && !av_dict_get(st->metadata, "title", nullptr, 0))
+            av_dict_set(&st->metadata, "title", c->text.c_str(), 0);
+    }
+}
+
 // Pin creation
 STDMETHODIMP CLAVFDemuxer::CreateStreams()
 {
@@ -4432,6 +4488,9 @@ STDMETHODIMP CLAVFDemuxer::CreateStreams()
                 m_avFormat->programs[i]->discard = AVDISCARD_ALL;
         }
     }
+
+    if (bProgram && m_bMPEGTS)
+        SetAribAudioComponentNames();
 
     // Re-compute the overall file duration based on video and audio durations
     int64_t duration = INT64_MIN;

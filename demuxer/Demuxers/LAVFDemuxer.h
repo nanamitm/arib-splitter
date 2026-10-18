@@ -174,6 +174,7 @@ class CLAVFDemuxer
   private:
     STDMETHODIMP AddStream(int streamId);
     STDMETHODIMP CreateStreams();
+    void SetAribAudioComponentNames();
     STDMETHODIMP InitAVFormat(LPCOLESTR pszFileName, BOOL bForce);
     void CleanupAVFormat();
     void UpdateParserFlags(AVStream *st);
