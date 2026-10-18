@@ -947,8 +947,13 @@ void CLAVSplitter::FilterTimestampDiscontinuity(CLAVOutputPin *pPin, Packet *pPa
             }
         }
     }
-    pPacket->rtStart += m_rtOffset;
-    pPacket->rtStop += m_rtOffset;
+    // Only an A/V packet sets the offset. A caption the demuxer hands over before
+    // the first one after a seek goes out on its own time.
+    if (m_rtOffset != AV_NOPTS_VALUE)
+    {
+        pPacket->rtStart += m_rtOffset;
+        pPacket->rtStop += m_rtOffset;
+    }
 
     pPin->m_rtPrev = pPacket->rtStart;
 }

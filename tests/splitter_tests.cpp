@@ -275,8 +275,9 @@ static void unseekableSeekTests()
 
 struct ParserPinTest : CLAVOutputPin
 {
-    ParserPinTest(CLAVSplitter *filter, std::deque<CMediaType> &types, HRESULT *hr)
-        : CLAVOutputPin(types, L"test PCM", filter, filter, hr, CBaseDemuxer::audio, "mpegts")
+    ParserPinTest(CLAVSplitter *filter, std::deque<CMediaType> &types, HRESULT *hr,
+                  CBaseDemuxer::StreamType type = CBaseDemuxer::audio)
+        : CLAVOutputPin(types, L"test PCM", filter, filter, hr, type, "mpegts")
     {
         check(SUCCEEDED(SetMediaType(&types.front())), "set planar PCM media type");
     }
@@ -447,8 +448,30 @@ static void timestampDiscontinuityTests()
     check(last[0] > jumpAt + 300000000 && last[1] > jumpAt + 300000000,
           "timestamps after a jump on all streams advance in real time");
 
+    // After a seek the shared offset is unset until an A/V packet comes in. A
+    // pending caption can be handed over before that, when the next caption PES
+    // closes it; its times must come through as they are.
+    {
+        SplitterTest seeked(&hr);
+        check(SUCCEEDED(hr), "construct seeked timestamp filter splitter");
+        HRESULT pinHr = S_OK;
+        ParserPinTest video(&seeked, types, &pinHr), caption(&seeked, types, &pinHr, CBaseDemuxer::subpic);
+        check(SUCCEEDED(pinHr) && caption.IsSubtitlePin(), "construct caption timestamp filter pin");
+        seeked.useTimestampFilter(demuxer, {&video, &caption});
+        bool reset = false;
+        // Times are relative to the segment start, as DeliverPacket passes them.
+        check(seeked.filterTimestamp(&caption, 2, 1000000, reset) == 1000000,
+              "a caption before any A/V packet keeps its timestamp");
+        check(seeked.filterTimestamp(&video, 0, 1200000, reset) == 1200000,
+              "the first A/V packet after a caption keeps its timestamp");
+        check(seeked.filterTimestamp(&caption, 2, 3000000, reset) == 3000000,
+              "a caption after the first A/V packet keeps its timestamp");
+        seeked.releaseTimestampFilter();
+    }
+
     demuxer->Release();
-    puts("PASS: a gap in one stream keeps timestamps, a jump on all streams is still smoothed over");
+    puts("PASS: a gap in one stream keeps timestamps, a jump on all streams is still smoothed over, "
+         "a caption ahead of A/V keeps its timestamp");
 }
 
 int main()
