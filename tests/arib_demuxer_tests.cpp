@@ -701,19 +701,27 @@ static void eitTests(ILAVFSettingsInternal *settings)
     const std::vector<uint8_t> kana = {0xA2, 0x0E, 0x41, 0x89, 0x41, 0x20, 0x1B, 0x7C, 0xA2};
     check(AribDecodeString(kana.data(), kana.size()) == u8"あＡA ア", "hiragana, alphanumeric and MSZ SI text");
 
-    // Without a text the name comes from the audio mode and the main flag.
+    // Without a text the name comes from the main flag and component_type,
+    // whose b4-b0 give the audio mode and b6-b5 audio for a person with
+    // disabilities (ARIB STD-B10 Table 6-43); b7, dialog control, is not named.
     AribAudioComponent component;
     component.componentType = 0x03;
     component.mainComponent = true;
     component.language = "jpn";
     check(AribAudioComponentName(component) == u8"ステレオ", "main stereo without text");
+    component.componentType = 0x83;
+    check(AribAudioComponentName(component) == u8"ステレオ", "dialog control flag is not named");
+    component.componentType = 0x51;
+    check(AribAudioComponentName(component) == u8"22.2ch 聴覚障害者用", "22.2ch for the hearing impaired");
     component.componentType = 0x09;
     component.mainComponent = false;
     check(AribAudioComponentName(component) == u8"副音声 5.1ch", "secondary 5.1ch without text");
-    component.componentType = 0xB0;
-    check(AribAudioComponentName(component) == u8"副音声", "secondary broadcaster-defined mode without text");
+    component.componentType = 0x23;
+    check(AribAudioComponentName(component) == u8"副音声 ステレオ 解説", "secondary stereo commentary");
+    component.componentType = 0x00;
+    check(AribAudioComponentName(component) == u8"副音声", "secondary reserved mode without text");
     component.mainComponent = true;
-    check(AribAudioComponentName(component).empty(), "main broadcaster-defined mode without text has no name");
+    check(AribAudioComponentName(component).empty(), "main reserved mode without text has no name");
     component.text = u8"日本語";
     check(AribAudioComponentName(component) == u8"日本語", "text wins over the audio mode");
 

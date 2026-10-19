@@ -447,10 +447,11 @@ int AribRecordedEvent(const AribEITAudio &eit, int64_t duration, const std::vect
 namespace
 {
 
-// Audio mode of component_type (ARIB STD-B10 Table 6-5), or nullptr.
-const char *AribAudioModeName(int componentType)
+// Audio mode, b4-b0 of component_type (ARIB STD-B10 Table 6-43), or nullptr.
+// The multi-channel modes are named by their channel count.
+const char *AribAudioModeName(int mode)
 {
-    switch (componentType)
+    switch (mode)
     {
     case 0x01: return u8"\u30E2\u30CE\u30E9\u30EB"; // mono
     case 0x02: return u8"\u4E8C\u91CD\u97F3\u58F0"; // dual mono
@@ -460,9 +461,26 @@ const char *AribAudioModeName(int componentType)
     case 0x06: return "2/2";
     case 0x07: return "3/1";
     case 0x08: return "3/2";
-    case 0x09: return "5.1ch";
-    case 0x40: return u8"\u89E3\u8AAC"; // commentary for the visually impaired
-    case 0x41: return u8"\u8074\u899A\u969C\u5BB3\u8005\u7528\u97F3\u58F0"; // for the hard of hearing
+    case 0x09: return "5.1ch";  // 3/2.1
+    case 0x0A: return "6.1ch";  // 3/3.1
+    case 0x0B: return "6.1ch";  // 2/0/0-2/0/2-0.1
+    case 0x0C: return "7.1ch";  // 5/2.1
+    case 0x0D: return "7.1ch";  // 3/2/2.1
+    case 0x0E: return "7.1ch";  // 2/0/0-3/0/2-0.1
+    case 0x0F: return "7.2ch";  // 0/2/0-3/0/2-0.2
+    case 0x10: return "10.2ch"; // 2/0/0-3/2/3-0.2
+    case 0x11: return "22.2ch"; // 3/3/3-5/2/3-3/0/0.2
+    default: return nullptr;
+    }
+}
+
+// Audio for a person with disabilities, b6-b5 of component_type, or nullptr.
+const char *AribAccessibilityName(int value)
+{
+    switch (value)
+    {
+    case 0x01: return u8"\u89E3\u8AAC"; // commentary for the visually impaired
+    case 0x02: return u8"\u8074\u899A\u969C\u5BB3\u8005\u7528"; // for the hearing impaired
     default: return nullptr;
     }
 }
@@ -476,6 +494,13 @@ std::string AribLanguageName(const std::string &code)
     return code;
 }
 
+void AppendWord(std::string &name, const std::string &word)
+{
+    if (!name.empty())
+        name += ' ';
+    name += word;
+}
+
 } // namespace
 
 std::string AribAudioComponentName(const AribAudioComponent &c)
@@ -483,16 +508,20 @@ std::string AribAudioComponentName(const AribAudioComponent &c)
     if (!c.text.empty())
         return c.text;
 
+    // e.g. "secondary audio, stereo, commentary" from 0x23 of a sub component.
     std::string name;
-    if (const char *mode = AribAudioModeName(c.componentType))
-        name = mode;
+    if (!c.mainComponent)
+        name = u8"\u526F\u97F3\u58F0"; // secondary audio
+    std::string mode;
+    if (const char *m = AribAudioModeName(c.componentType & 0x1F))
+        mode = m;
     // Dual mono carries the language of each channel, e.g. (Japanese/English).
     if (!c.language2.empty() && c.language2 != c.language)
-    {
-        name += u8"\uFF08" + AribLanguageName(c.language) + "/" + AribLanguageName(c.language2) + u8"\uFF09";
-    }
-    if (!c.mainComponent)
-        name = name.empty() ? u8"\u526F\u97F3\u58F0" : u8"\u526F\u97F3\u58F0 " + name; // secondary audio
+        mode += u8"\uFF08" + AribLanguageName(c.language) + "/" + AribLanguageName(c.language2) + u8"\uFF09";
+    if (!mode.empty())
+        AppendWord(name, mode);
+    if (const char *a = AribAccessibilityName((c.componentType >> 5) & 0x03))
+        AppendWord(name, a);
     return name;
 }
 

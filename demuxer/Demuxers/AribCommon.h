@@ -80,9 +80,10 @@ int AribRecordedEvent(const AribEITAudio &eit, int64_t duration, const std::vect
 // Store the time of a TOT (0x73) or TDT (0x70) section in |eit| if it has none.
 bool AribParseTOT(const uint8_t *section, size_t size, AribEITAudio &eit);
 
-// Track name of an audio component: its text, or else one built from the
-// audio mode, the two languages of a dual mono stream and whether it is the
-// main audio. Empty when none of these say anything.
+// Track name of an audio component: its text, or else one built from whether
+// it is the main audio, the audio mode and the audio for a person with
+// disabilities in component_type, and the two languages of a dual mono
+// stream. Empty when none of these say anything.
 std::string AribAudioComponentName(const AribAudioComponent &c);
 
 // Decode an ARIB STD-B24 8-bit coded SI text into UTF-8.
