@@ -4354,37 +4354,32 @@ void CLAVFDemuxer::SetAribAudioComponentNames()
             streams.push_back({st, tag});
     }
 
-    // A recording usually starts a little before its event, so the present
-    // event can still be the previous programme, which lacks an audio
-    // component (and its PMT the stream) the recorded one adds. Take the
-    // event that describes every audio stream, the present one first.
-    auto describesAll = [&](int section) {
-        if (eit.events[section].audio.empty())
-            return false;
-        for (const auto &s : streams)
-        {
-            if (!eit.Find(section, s.second))
-                return false;
-        }
-        return true;
-    };
-    const int section = describesAll(0) ? 0 : describesAll(1) ? 1 : -1;
+    std::vector<int> tags;
+    for (const auto &s : streams)
+        tags.push_back(s.second);
+    const int64_t duration = m_avFormat->duration != AV_NOPTS_VALUE ? m_avFormat->duration / AV_TIME_BASE : -1;
+    const int section = AribRecordedEvent(eit, duration, tags);
+    const int first = section >= 0 ? section : 0;
 
     for (const auto &s : streams)
     {
         AVStream *st = s.first;
         const int tag = s.second;
-        const AribAudioComponent *c = section >= 0 ? eit.Find(section, tag) : eit.Find(0, tag);
-        if (!c && section < 0)
-            c = eit.Find(1, tag);
+        // A stream the recorded event does not describe takes the other one.
+        const AribAudioComponent *c = eit.Find(first, tag);
+        if (!c)
+            c = eit.Find(1 - first, tag);
         if (!c)
             continue;
-        ARIB_LOG("[ARIB] EIT audio component: stream=%d tag=0x%02x event=%d type=0x%02x lang=%s text=%s\n",
-                 st->index, tag, section, c->componentType, c->language.c_str(), c->text.c_str());
+        const std::string name = AribAudioComponentName(*c);
+        ARIB_LOG("[ARIB] EIT audio component: stream=%d tag=0x%02x event=%d type=0x%02x lang=%s/%s main=%d "
+                 "text=%s name=%s\n",
+                 st->index, tag, section, c->componentType, c->language.c_str(), c->language2.c_str(),
+                 c->mainComponent ? 1 : 0, c->text.c_str(), name.c_str());
         if (!c->language.empty() && !get_stream_language(st))
             av_dict_set(&st->metadata, "language", c->language.c_str(), 0);
-        if (!c->text.empty() && !av_dict_get(st->metadata, "title", nullptr, 0))
-            av_dict_set(&st->metadata, "title", c->text.c_str(), 0);
+        if (!name.empty() && !av_dict_get(st->metadata, "title", nullptr, 0))
+            av_dict_set(&st->metadata, "title", name.c_str(), 0);
     }
 }
 

@@ -51,19 +51,39 @@ struct AribAudioComponent
     std::string text;      // UTF-8 component text, used as the track name
 };
 
+// Times below are JST seconds counted from MJD 0, or -1 when undefined.
 struct AribEITEvent
 {
     bool present = false; // section seen
     int eventId = -1;     // -1 for a section without an event
+    int64_t startTime = -1;
+    int64_t duration = -1;
     std::vector<AribAudioComponent> audio;
 };
 
-// Audio components of the present (0) and following (1) events of a service.
+// Audio components of the present (0) and following (1) events of a service,
+// and the time of the first TOT/TDT, which dates the start of a recording.
 struct AribEITAudio
 {
     AribEITEvent events[2];
+    int64_t firstTime = -1;
     const AribAudioComponent *Find(int sectionNumber, int componentTag) const;
 };
+
+// The event (0 present, 1 following) a recording of |duration| seconds shows
+// the most of, from its first TOT and the event times. A recording usually
+// starts shortly before its event, while the present one is still the previous
+// programme. Without times, the event that describes every one of
+// |componentTags| (the present one first); -1 if neither does.
+int AribRecordedEvent(const AribEITAudio &eit, int64_t duration, const std::vector<int> &componentTags);
+
+// Store the time of a TOT (0x73) or TDT (0x70) section in |eit| if it has none.
+bool AribParseTOT(const uint8_t *section, size_t size, AribEITAudio &eit);
+
+// Track name of an audio component: its text, or else one built from the
+// audio mode, the two languages of a dual mono stream and whether it is the
+// main audio. Empty when none of these say anything.
+std::string AribAudioComponentName(const AribAudioComponent &c);
 
 // Decode an ARIB STD-B24 8-bit coded SI text into UTF-8.
 std::string AribDecodeString(const uint8_t *data, size_t size);
@@ -80,7 +100,7 @@ struct AVStream;
 // stream, or -1 without one.
 int AribStreamComponentTag(AVStream *st);
 
-// Read the EIT present/following of |serviceId| from the start of a seekable
-// TS until both events are found or 16 MiB in, then seek |pb| back to where it
-// was. Returns whether either event was found.
+// Read the EIT present/following of |serviceId| and the first TOT from the
+// start of a seekable TS until all are found or 16 MiB in, then seek |pb| back
+// to where it was. Returns whether either event was found.
 bool AribScanEIT(AVIOContext *pb, int serviceId, AribEITAudio &eit);

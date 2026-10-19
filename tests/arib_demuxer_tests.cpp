@@ -613,23 +613,39 @@ static std::vector<uint8_t> section(uint8_t tableId, uint16_t id, uint8_t number
         s.push_back(uint8_t(crc >> shift));
     return s;
 }
-// ARIB audio component descriptor (0xC4) of an AAC stereo component.
-static std::vector<uint8_t> audioComponent(uint8_t tag, bool main, std::vector<uint8_t> text)
+// ARIB audio component descriptor (0xC4) of an AAC component, stereo unless
+// |type| says otherwise. |language2| makes it a multi-lingual (dual mono) one.
+static std::vector<uint8_t> audioComponent(uint8_t tag, bool main, std::vector<uint8_t> text, uint8_t type = 0x03,
+                                           const char *language2 = nullptr)
 {
-    std::vector<uint8_t> d = {0xC4, uint8_t(9 + text.size()), 0xF2, 0x03, tag, 0x0F, 0xFF,
-                              uint8_t(main ? 0x6F : 0x2F), 'j', 'p', 'n'};
+    const uint8_t flags = uint8_t((language2 ? 0x80 : 0) | (main ? 0x6F : 0x2F));
+    std::vector<uint8_t> d = {0xC4, 0, 0xF2, type, tag, 0x0F, 0xFF, flags, 'j', 'p', 'n'};
+    if (language2)
+        d.insert(d.end(), language2, language2 + 3);
     d.insert(d.end(), text.begin(), text.end());
+    d[1] = uint8_t(d.size() - 2);
     return d;
 }
-// EIT present/following actual section with one event holding |descriptors|.
-static std::vector<uint8_t> eitSection(uint16_t serviceId, uint8_t number, std::vector<uint8_t> descriptors)
+// EIT present/following actual section with one 30 minute event holding
+// |descriptors|, starting at |hour|:|minute| (BCD) of MJD 0xE8B4.
+static std::vector<uint8_t> eitSection(uint16_t serviceId, uint8_t number, std::vector<uint8_t> descriptors,
+                                       uint8_t hour = 0x06, uint8_t minute = 0x30)
 {
-    std::vector<uint8_t> body = {0x7F, 0xE0, 0x7F, 0xE0, 1, 0x4E,
-                                 0x10, uint8_t(number), 0xE8, 0xB4, 0x23, 0x30, 0x00, 0x00, 0x30, 0x00};
+    std::vector<uint8_t> body = {0x7F, 0xE0, 0x7F, 0xE0, 1,    0x4E, 0x10, uint8_t(number),
+                                 0xE8, 0xB4, hour, minute, 0x00, 0x00, 0x30, 0x00};
     body.push_back(uint8_t(0x80 | (descriptors.size() >> 8)));
     body.push_back(uint8_t(descriptors.size()));
     body.insert(body.end(), descriptors.begin(), descriptors.end());
     return section(0x4E, serviceId, number, body);
+}
+// TOT at |hour|:|minute|:|second| (BCD) of MJD 0xE8B4, without descriptors.
+static std::vector<uint8_t> tot(uint8_t hour, uint8_t minute, uint8_t second)
+{
+    std::vector<uint8_t> s = {0x73, 0x70, 11, 0xE8, 0xB4, hour, minute, second, 0xF0, 0x00};
+    const uint32_t crc = av_crc(av_crc_get_table(AV_CRC_32_IEEE), UINT32_MAX, s.data(), s.size());
+    for (int shift = 0; shift < 32; shift += 8)
+        s.push_back(uint8_t(crc >> shift));
+    return s;
 }
 struct TsBuffer
 {
@@ -685,18 +701,65 @@ static void eitTests(ILAVFSettingsInternal *settings)
     const std::vector<uint8_t> kana = {0xA2, 0x0E, 0x41, 0x89, 0x41, 0x20, 0x1B, 0x7C, 0xA2};
     check(AribDecodeString(kana.data(), kana.size()) == u8"あＡA ア", "hiragana, alphanumeric and MSZ SI text");
 
+    // Without a text the name comes from the audio mode and the main flag.
+    AribAudioComponent component;
+    component.componentType = 0x03;
+    component.mainComponent = true;
+    component.language = "jpn";
+    check(AribAudioComponentName(component) == u8"ステレオ", "main stereo without text");
+    component.componentType = 0x09;
+    component.mainComponent = false;
+    check(AribAudioComponentName(component) == u8"副音声 5.1ch", "secondary 5.1ch without text");
+    component.componentType = 0xB0;
+    check(AribAudioComponentName(component) == u8"副音声", "secondary broadcaster-defined mode without text");
+    component.mainComponent = true;
+    check(AribAudioComponentName(component).empty(), "main broadcaster-defined mode without text has no name");
+    component.text = u8"日本語";
+    check(AribAudioComponentName(component) == u8"日本語", "text wins over the audio mode");
+
+    // The recorded event is the one the recording overlaps most; without a
+    // TOT, the one describing every audio stream, the present one first.
+    AribEITAudio events;
+    AribAudioComponent mainAudio, subAudio;
+    mainAudio.componentTag = 0x10;
+    subAudio.componentTag = 0x11;
+    events.events[0].audio = {mainAudio};
+    events.events[1].audio = {mainAudio, subAudio};
+    check(AribRecordedEvent(events, 1830, {0x10, 0x11}) == 1, "no TOT: the event describing every stream");
+    check(AribRecordedEvent(events, 1830, {0x10}) == 0, "no TOT: the present event first");
+    check(AribRecordedEvent(events, 1830, {0x12}) == -1, "no TOT: neither event describes the stream");
+    events.events[0].audio = events.events[1].audio;
+    events.events[0].startTime = 1000;
+    events.events[0].duration = 1800;
+    events.events[1].startTime = 2800;
+    events.events[1].duration = 1800;
+    events.firstTime = 2775;
+    check(AribRecordedEvent(events, 1830, {0x10, 0x11}) == 1, "TOT: the event the recording overlaps most");
+    events.firstTime = 1000;
+    check(AribRecordedEvent(events, 1830, {0x10, 0x11}) == 0, "TOT: the present event when it is recorded");
+
     const uint16_t service = 0x0400, other = 0x0401;
     TsBuffer ts;
     ts.put(0x0000, section(0x00, 0x7FE0, 0, {0x04, 0x00, 0xE1, 0xF0}));
     ts.put(0x01F0, section(0x02, service, 0,
                            {0xE1, 0x10, 0xF0, 0x00,                               // PCR PID, no program info
                             0x0F, 0xE1, 0x10, 0xF0, 0x03, 0x52, 0x01, 0x10,       // AAC, component tag 0x10
-                            0x0F, 0xE1, 0x11, 0xF0, 0x03, 0x52, 0x01, 0x11}));    // AAC, component tag 0x11
-    // The recording starts in the previous event, which has only the main
-    // audio; the recorded one, still the following event, adds commentary.
-    ts.put(0x0012, eitSection(service, 0, audioComponent(0x10, true, {})));
+                            0x0F, 0xE1, 0x11, 0xF0, 0x03, 0x52, 0x01, 0x11,      // AAC, component tag 0x11
+                            0x0F, 0xE1, 0x12, 0xF0, 0x03, 0x52, 0x01, 0x12}));    // AAC, component tag 0x12
+    // The recording starts at 06:29:35 in the previous event, which describes
+    // every audio stream as well; the recorded 06:30 event, still the
+    // following one, has commentary and a dual mono component without a text.
+    ts.put(0x0014, tot(0x06, 0x29, 0x35));
+    auto present = audioComponent(0x10, true, commentary);
+    auto second = audioComponent(0x11, false, japanese);
+    present.insert(present.end(), second.begin(), second.end());
+    second = audioComponent(0x12, false, japanese);
+    present.insert(present.end(), second.begin(), second.end());
+    ts.put(0x0012, eitSection(service, 0, present, 0x06, 0x00));
     auto following = audioComponent(0x10, true, japanese);
-    auto second = audioComponent(0x11, false, commentary);
+    second = audioComponent(0x11, false, commentary);
+    following.insert(following.end(), second.begin(), second.end());
+    second = audioComponent(0x12, false, {}, 0x02, "eng");
     following.insert(following.end(), second.begin(), second.end());
     const auto followingSection = eitSection(service, 1, following);
     AribEITAudio parsed;
@@ -708,10 +771,7 @@ static void eitTests(ILAVFSettingsInternal *settings)
     auto corrupt = eitSection(service, 1, audioComponent(0x11, false, japanese));
     corrupt.back() ^= 0xFF;
     ts.put(0x0012, corrupt);
-    auto otherAudio = audioComponent(0x10, true, commentary);
-    second = audioComponent(0x11, false, japanese);
-    otherAudio.insert(otherAudio.end(), second.begin(), second.end());
-    ts.put(0x0012, eitSection(other, 0, otherAudio));
+    ts.put(0x0012, eitSection(other, 1, present));
     while (ts.data.size() < 64 * 188)
         ts.put(0x1FFF, {});
 
@@ -723,16 +783,20 @@ static void eitTests(ILAVFSettingsInternal *settings)
     ctx->flags |= AVFMT_FLAG_CUSTOM_IO;
     check(avformat_open_input(&ctx, nullptr, av_find_input_format("mpegts"), nullptr) == 0, "open synthetic TS");
     check(avformat_find_stream_info(ctx, nullptr) >= 0, "probe synthetic TS");
+    ctx->duration = 1830 * int64_t(AV_TIME_BASE); // 06:29:35 to 07:00:05
     {
         CCritSec lock;
         Demuxer d(&lock, settings, ctx);
         check(d.createStreams() == S_OK, "create streams of synthetic TS");
-        check(d.audioCount() == 2, "both audio streams");
+        check(d.audioCount() == 3, "all audio streams");
         const auto &main = d.audioStream(0);
         const auto &sub = d.audioStream(1);
+        const auto &dual = d.audioStream(2);
         check(main.trackName == u8"日本語", "main audio named from the following event");
         check(sub.trackName == u8"日本語（解説）", "commentary named from the following event");
-        check(main.language == "jpn" && sub.language == "jpn", "audio language from the EIT");
+        check(dual.trackName == u8"副音声 二重音声（日本語/英語）", "dual mono without text named from its mode");
+        check(main.language == "jpn" && sub.language == "jpn" && dual.language == "jpn",
+              "audio language from the EIT");
         check(sub.lcid == ProbeLangForLCID("jpn"), "audio LCID from the EIT language");
         check(sub.streamInfo->codecInfo.find(u8"日本語（解説） [jpn]") != std::string::npos,
               "stream selection name carries the EIT name");

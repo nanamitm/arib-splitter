@@ -25,6 +25,7 @@
 // Built without stdafx.h: FFmpeg's internal.h, which holds the component tag,
 // clashes with the AVCodecTag stdafx.h declares.
 #include <windows.h>
+#include <algorithm>
 #include "AribCommon.h"
 
 extern "C"
@@ -156,6 +157,30 @@ uint32_t AribCharToUnicode(const AribCodeSet &cs, uint8_t c1, uint8_t c2, bool m
 int ReadBE16(const uint8_t *p)
 {
     return (p[0] << 8) | p[1];
+}
+
+// hh mm ss in BCD, or -1 if any digit is not one (all ones means undefined).
+int64_t ReadBCDTime(const uint8_t *p)
+{
+    int64_t seconds = 0;
+    const int scale[3] = {3600, 60, 1};
+    for (int i = 0; i < 3; ++i)
+    {
+        const int hi = p[i] >> 4, lo = p[i] & 0x0F;
+        if (hi > 9 || lo > 9)
+            return -1;
+        seconds += (hi * 10 + lo) * scale[i];
+    }
+    return seconds;
+}
+
+// MJD date and BCD time of day, as used by the EIT and the TOT.
+int64_t ReadMJDTime(const uint8_t *p)
+{
+    const int64_t time = ReadBCDTime(p + 2);
+    if (time < 0)
+        return -1;
+    return ReadBE16(p) * 86400LL + time;
 }
 
 void ParseAudioComponent(const uint8_t *d, size_t len, std::vector<AribAudioComponent> &out)
@@ -334,6 +359,8 @@ bool AribParseEITAudioComponents(const uint8_t *section, size_t size, int servic
     if (end - p >= 12)
     {
         event.eventId = ReadBE16(p);
+        event.startTime = ReadMJDTime(p + 2);
+        event.duration = ReadBCDTime(p + 7);
         size_t loopLength = ReadBE16(p + 10) & 0x0FFF;
         p += 12;
         if (loopLength > (size_t)(end - p))
@@ -361,6 +388,112 @@ const AribAudioComponent *AribEITAudio::Find(int sectionNumber, int componentTag
         if (c.componentTag == componentTag)
             return &c;
     return nullptr;
+}
+
+bool AribParseTOT(const uint8_t *section, size_t size, AribEITAudio &eit)
+{
+    // table_id, section_length, JST_time; the TOT adds descriptors and a CRC.
+    if (size < 8 || (section[0] != 0x73 && section[0] != 0x70))
+        return false;
+    const size_t sectionLength = ((section[1] & 0x0F) << 8) | section[2];
+    if (sectionLength < 5 || sectionLength + 3 > size)
+        return false;
+    if (section[0] == 0x73 && av_crc(av_crc_get_table(AV_CRC_32_IEEE), UINT32_MAX, section, sectionLength + 3) != 0)
+        return false;
+    const int64_t time = ReadMJDTime(section + 3);
+    if (time < 0)
+        return false;
+    if (eit.firstTime < 0)
+        eit.firstTime = time;
+    return true;
+}
+
+int AribRecordedEvent(const AribEITAudio &eit, int64_t duration, const std::vector<int> &componentTags)
+{
+    if (eit.firstTime >= 0 && duration >= 0)
+    {
+        const int64_t begin = eit.firstTime, end = begin + duration;
+        int best = -1;
+        int64_t bestOverlap = 0;
+        for (int i = 0; i < 2; ++i)
+        {
+            const AribEITEvent &e = eit.events[i];
+            if (e.startTime < 0 || e.duration < 0)
+                continue;
+            const int64_t overlap = (std::min)(end, e.startTime + e.duration) - (std::max)(begin, e.startTime);
+            if (overlap > bestOverlap)
+            {
+                best = i;
+                bestOverlap = overlap;
+            }
+        }
+        if (best >= 0)
+            return best;
+    }
+
+    for (int i = 0; i < 2; ++i)
+    {
+        if (eit.events[i].audio.empty())
+            continue;
+        bool all = true;
+        for (int tag : componentTags)
+            all = all && eit.Find(i, tag) != nullptr;
+        if (all)
+            return i;
+    }
+    return -1;
+}
+
+namespace
+{
+
+// Audio mode of component_type (ARIB STD-B10 Table 6-5), or nullptr.
+const char *AribAudioModeName(int componentType)
+{
+    switch (componentType)
+    {
+    case 0x01: return u8"\u30E2\u30CE\u30E9\u30EB"; // mono
+    case 0x02: return u8"\u4E8C\u91CD\u97F3\u58F0"; // dual mono
+    case 0x03: return u8"\u30B9\u30C6\u30EC\u30AA"; // stereo
+    case 0x04: return "2/1";
+    case 0x05: return "3/0";
+    case 0x06: return "2/2";
+    case 0x07: return "3/1";
+    case 0x08: return "3/2";
+    case 0x09: return "5.1ch";
+    case 0x40: return u8"\u89E3\u8AAC"; // commentary for the visually impaired
+    case 0x41: return u8"\u8074\u899A\u969C\u5BB3\u8005\u7528\u97F3\u58F0"; // for the hard of hearing
+    default: return nullptr;
+    }
+}
+
+std::string AribLanguageName(const std::string &code)
+{
+    if (code == "jpn")
+        return u8"\u65E5\u672C\u8A9E";
+    if (code == "eng")
+        return u8"\u82F1\u8A9E";
+    return code;
+}
+
+} // namespace
+
+std::string AribAudioComponentName(const AribAudioComponent &c)
+{
+    if (!c.text.empty())
+        return c.text;
+
+    std::string name;
+    if (const char *mode = AribAudioModeName(c.componentType))
+        name = mode;
+    // Dual mono carries the language of each channel, e.g. (Japanese/English).
+    if (!c.language2.empty() && c.language2 != c.language)
+    {
+        name += u8"\uFF08" + AribLanguageName(c.language) + "/" + AribLanguageName(c.language2) + u8"\uFF09";
+    }
+    if (!c.mainComponent)
+        name = name.empty() ? u8"\u526F\u97F3\u58F0" : u8"\u526F\u97F3\u58F0 " + name; // secondary audio
+    return name;
 }
 
 int AribStreamComponentTag(AVStream *st)
@@ -450,8 +583,8 @@ ptrdiff_t FindTSSync(const std::vector<uint8_t> &data, size_t from, int size)
 
 bool AribScanEIT(AVIOContext *pb, int serviceId, AribEITAudio &eit)
 {
-    // EIT p/f actual repeats at least every 2 seconds; 16 MiB is about 8
-    // seconds of a 16 Mbps broadcast.
+    // EIT p/f actual repeats at least every 2 seconds and the TOT every 5;
+    // 16 MiB is about 8 seconds of a 16 Mbps broadcast.
     const int64_t kScanBytes = 16 << 20;
     if (!pb || !(pb->seekable & AVIO_SEEKABLE_NORMAL))
         return false;
@@ -459,13 +592,15 @@ bool AribScanEIT(AVIOContext *pb, int serviceId, AribEITAudio &eit)
     if (resume < 0 || avio_seek(pb, 0, SEEK_SET) < 0)
         return false;
 
-    AribSectionReader reader;
-    auto onSection = [&](const uint8_t *s, size_t size) { AribParseEITAudioComponents(s, size, serviceId, eit); };
+    AribSectionReader eitReader, totReader;
+    auto onEIT = [&](const uint8_t *s, size_t size) { AribParseEITAudioComponents(s, size, serviceId, eit); };
+    auto onTOT = [&](const uint8_t *s, size_t size) { AribParseTOT(s, size, eit); };
     std::vector<uint8_t> data;
     std::vector<uint8_t> chunk(64 * 1024);
     size_t pos = 0;
     int packetSize = 0;
-    for (int64_t total = 0; total < kScanBytes && !(eit.events[0].present && eit.events[1].present);)
+    for (int64_t total = 0;
+         total < kScanBytes && !(eit.events[0].present && eit.events[1].present && eit.firstTime >= 0);)
     {
         const int n = avio_read(pb, chunk.data(), (int)chunk.size());
         if (n <= 0)
@@ -499,8 +634,11 @@ bool AribScanEIT(AVIOContext *pb, int serviceId, AribEITAudio &eit)
                 ++pos; // lost sync, look for the next sync byte
                 continue;
             }
-            if ((((p[1] & 0x1F) << 8) | p[2]) == 0x12)
-                reader.Packet(p, onSection);
+            const int pid = ((p[1] & 0x1F) << 8) | p[2];
+            if (pid == 0x12)
+                eitReader.Packet(p, onEIT);
+            else if (pid == 0x14 && eit.firstTime < 0)
+                totReader.Packet(p, onTOT);
             pos += packetSize;
         }
     }
