@@ -1023,21 +1023,35 @@ BOOL CLAVAudio::IsDualMonoCapable() const
     return m_nCodecId == AV_CODEC_ID_AAC || m_nCodecId == AV_CODEC_ID_AAC_LATM;
 }
 
-void CLAVAudio::ApplyDualMonoMode()
+void CLAVAudio::ApplyDualMonoMode(DWORD dwMode)
 {
-    // Caller holds m_csReceive, also used by decoding and ffmpeg_init().
+    // Caller holds m_csReceive, also used by decoding and ffmpeg_init(). The
+    // mode is passed in because it is published under m_csDualMono, which this
+    // code path does not hold.
     if (!m_pAVCtx || !m_pAVCtx->priv_data || !IsDualMonoCapable())
         return;
 
     // The decoder reads this per frame, so switching during playback takes
     // effect on the next frame without re-initialising anything.
     // Our values match the decoder's: 0 = both, 1 = main, 2 = sub.
-    av_opt_set_int(m_pAVCtx->priv_data, "dual_mono_mode", (int64_t)m_settings.DualMonoMode, 0);
+    av_opt_set_int(m_pAVCtx->priv_data, "dual_mono_mode", (int64_t)dwMode, 0);
+}
+
+// Takes the pending selection, if any, for the caller to apply while it holds
+// m_csReceive. Returns false when there is nothing to do.
+bool CLAVAudio::TakePendingDualMonoMode(DWORD *pdwMode)
+{
+    CAutoLock lock(&m_csDualMono);
+    if (!m_bDualMonoPending)
+        return false;
+    m_bDualMonoPending = FALSE;
+    *pdwMode = m_settings.DualMonoMode;
+    return true;
 }
 
 STDMETHODIMP_(DWORD) CLAVAudio::GetDualMonoMode()
 {
-    CAutoLock lock(&m_csReceive);
+    CAutoLock lock(&m_csDualMono);
     return m_settings.DualMonoMode;
 }
 
@@ -1046,9 +1060,16 @@ STDMETHODIMP CLAVAudio::SetDualMonoMode(DWORD dwMode)
     if (dwMode > DualMono_Sub)
         return E_INVALIDARG;
 
-    CAutoLock lock(&m_csReceive);
-    m_settings.DualMonoMode = dwMode;
-    ApplyDualMonoMode();
+    // Publish under m_csDualMono and let the next Receive() push it into the
+    // decoder. Applying it here would mean taking m_csReceive, and this is
+    // called from the player's message thread (property page, IAMStreamSelect
+    // ::Enable), which deadlocks against a renderer that holds Receive() until
+    // the sample's presentation time.
+    {
+        CAutoLock lock(&m_csDualMono);
+        m_settings.DualMonoMode = dwMode;
+        m_bDualMonoPending = TRUE;
+    }
     SaveSettings();
 
     return S_OK;
@@ -1061,9 +1082,18 @@ static const WCHAR *const kDualMonoNames[] = {
     L"副音声",          // sub only
 };
 
+// The three IAMStreamSelect methods are called by the player on its message
+// thread. Count() and Info() only report, so they must not take m_csReceive:
+// Receive() holds it for the whole decode including Deliver(), and a renderer
+// holds Deliver() until the sample's presentation time, so the message thread
+// would block for as long as the upstream read-ahead - building a menu during
+// playback then deadlocks against the renderer it is waiting for.
+//
+// m_nCodecId is read without a lock on purpose. It is an aligned 32-bit enum
+// written when the input format is initialised, so a read here cannot tear; at
+// worst it is one format change stale and the submenu appears a menu late.
 STDMETHODIMP CLAVAudio::Count(DWORD *pcStreams)
 {
-    CAutoLock lock(&m_csReceive);
     CheckPointer(pcStreams, E_POINTER);
     *pcStreams = IsDualMonoCapable() ? (DWORD)_countof(kDualMonoNames) : 0;
     return S_OK;
@@ -1071,7 +1101,8 @@ STDMETHODIMP CLAVAudio::Count(DWORD *pcStreams)
 
 STDMETHODIMP CLAVAudio::Enable(long lIndex, DWORD dwFlags)
 {
-    CAutoLock lock(&m_csReceive);
+    // No m_csReceive: SetDualMonoMode() defers the decoder change for the same
+    // reason Count() and Info() above do not take it.
     if (!IsDualMonoCapable())
         return E_NOTIMPL;
     if (lIndex < 0 || lIndex >= (long)_countof(kDualMonoNames))
@@ -1085,7 +1116,6 @@ STDMETHODIMP CLAVAudio::Enable(long lIndex, DWORD dwFlags)
 STDMETHODIMP CLAVAudio::Info(long lIndex, AM_MEDIA_TYPE **ppmt, DWORD *pdwFlags, LCID *plcid, DWORD *pdwGroup,
                              WCHAR **ppszName, IUnknown **ppObject, IUnknown **ppUnk)
 {
-    CAutoLock lock(&m_csReceive);
     if (!IsDualMonoCapable())
         return E_NOTIMPL;
     if (lIndex < 0 || lIndex >= (long)_countof(kDualMonoNames))
@@ -1102,9 +1132,12 @@ STDMETHODIMP CLAVAudio::Info(long lIndex, AM_MEDIA_TYPE **ppmt, DWORD *pdwFlags,
     if (ppUnk)
         *ppUnk = nullptr;
     if (pdwFlags)
+    {
+        CAutoLock lock(&m_csDualMono);
         *pdwFlags = ((DWORD)lIndex == m_settings.DualMonoMode)
                         ? (AMSTREAMSELECTINFO_ENABLED | AMSTREAMSELECTINFO_EXCLUSIVE)
                         : 0;
+    }
     if (ppszName)
     {
         size_t bytes = (wcslen(kDualMonoNames[lIndex]) + 1) * sizeof(WCHAR);
@@ -1621,7 +1654,14 @@ HRESULT CLAVAudio::ffmpeg_init(AVCodecID codec, const void *format, const GUID f
     if (ret >= 0)
     {
         m_pFrame = av_frame_alloc();
-        ApplyDualMonoMode();
+        DWORD dwDualMono = GetDualMonoMode();
+        {
+            // A selection made while the decoder was closed is applied here, so
+            // it no longer needs to wait for the next sample.
+            CAutoLock lock(&m_csDualMono);
+            m_bDualMonoPending = FALSE;
+        }
+        ApplyDualMonoMode(dwDualMono);
     }
     else
     {
@@ -1927,6 +1967,12 @@ HRESULT CLAVAudio::FlushDecoder()
 HRESULT CLAVAudio::Receive(IMediaSample *pIn)
 {
     CAutoLock cAutoLock(&m_csReceive);
+
+    // A dual mono selection made on the player's message thread is applied
+    // here, where the decoder is already ours to touch.
+    DWORD dwDualMono;
+    if (TakePendingDualMonoMode(&dwDualMono))
+        ApplyDualMonoMode(dwDualMono);
 
     HRESULT hr;
 

@@ -72,13 +72,18 @@ int wmain(int argc, wchar_t **argv)
             SetEvent(done);
         });
         WaitForSingleObject(started, INFINITE);
-        bool serialized = WaitForSingleObject(done, 100) == WAIT_TIMEOUT;
+        // The setter must NOT wait for the receive lock. It is called on the
+        // player's message thread (property page, IAMStreamSelect::Enable),
+        // and a renderer holds Receive() until the sample's presentation time,
+        // so waiting here deadlocks the whole player. The decoder change is
+        // deferred to the top of the next Receive() instead.
+        bool prompt = WaitForSingleObject(done, 5000) == WAIT_OBJECT_0;
         audio.unlockReceive();
         blocked.join();
         CloseHandle(started);
         CloseHandle(done);
-        check(serialized, "dual mono setter must wait for receive lock");
-        check(audio.GetDualMonoMode() == DualMono_Sub, "mode applied after receive lock");
+        check(prompt, "dual mono setter must not wait for the receive lock");
+        check(audio.GetDualMonoMode() == DualMono_Sub, "mode published while receive is held");
         std::atomic<bool> ok{true};
         std::thread changes([&] {
             for (int i = 0; i < 5000; ++i)

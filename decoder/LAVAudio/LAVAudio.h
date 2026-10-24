@@ -339,8 +339,21 @@ class __declspec(uuid("40920401-7808-4AB3-B7EF-6EEAF8C262F0")) CLAVAudio
     } m_settings;
     BOOL m_bRuntimeConfig = FALSE;
 
+    // Guards DualMonoMode for the IAMStreamSelect reads, which a player calls
+    // on its message thread while building a menu. It is never held across a
+    // blocking call, unlike m_csReceive, which Receive() holds for the whole
+    // decode including Deliver(): taking that one from the message thread
+    // deadlocks whenever the renderer is holding Receive() until a sample's
+    // presentation time.
+    CCritSec m_csDualMono;
+    // Set when a new selection is waiting to reach the decoder. Guarded by
+    // m_csDualMono, consumed at the top of Receive(), which owns m_csReceive.
+    BOOL m_bDualMonoPending = FALSE;
+
     // Push the dual mono selection into the AAC decoder (no-op for other codecs)
-    void ApplyDualMonoMode();
+    void ApplyDualMonoMode(DWORD dwMode);
+    // Hand the pending selection, if any, to a caller holding m_csReceive
+    bool TakePendingDualMonoMode(DWORD *pdwMode);
     // True while the input is a codec that can carry ARIB dual mono
     BOOL IsDualMonoCapable() const;
 
