@@ -21,8 +21,10 @@ against the production objects, and fails on the first failing test. Use
   HKLM redirected to temporary HKCU keys. It checks restoration, repeat install,
   absent mappings, and another filter taking ownership. System filter mappings
   are not modified; administrator rights are not required.
-- `audio_tests.cpp` verifies that a mode change blocks while the receive lock is
+- `audio_tests.cpp` verifies that a mode change completes while the receive lock is
   held, then races 5,000 mode changes against 1,000 AAC/PCM reinitializations.
+  The actual AAC decoder selection must match the latest setting or still have
+  a pending update; initialization and pending-update application are checked too.
   Runtime configuration prevents changes to the user's saved audio settings.
 
 - `splitter_tests.cpp` exercises production input callbacks with a deterministic

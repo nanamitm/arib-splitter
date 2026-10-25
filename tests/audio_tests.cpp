@@ -18,6 +18,28 @@ struct AudioTest : CLAVAudio
     }
     void lockReceive() { m_csReceive.Lock(); }
     void unlockReceive() { m_csReceive.Unlock(); }
+    void checkDecoderSelection(bool requireApplied = false)
+    {
+        CAutoLock receive(&m_csReceive);
+        CAutoLock selection(&m_csDualMono);
+        if (!IsDualMonoCapable())
+            return;
+        int64_t applied = -1;
+        check(m_pAVCtx && m_pAVCtx->priv_data &&
+                  av_opt_get_int(m_pAVCtx->priv_data, "dual_mono_mode", 0, &applied) >= 0,
+              "read actual AAC decoder selection");
+        check(applied == m_settings.DualMonoMode || (!requireApplied && m_bDualMonoPending),
+              "latest selection is applied or still pending, never lost");
+        if (requireApplied)
+            check(!m_bDualMonoPending, "applied selection is acknowledged");
+    }
+    void applyPendingSelection()
+    {
+        CAutoLock receive(&m_csReceive);
+        DWORD mode;
+        if (TakePendingDualMonoMode(&mode))
+            ApplyDualMonoMode(mode);
+    }
 };
 static CMediaType media(bool aac)
 {
@@ -63,7 +85,9 @@ int wmain(int argc, wchar_t **argv)
         check(SUCCEEDED(hr), "construct audio filter");
         audio.SetRuntimeConfig(TRUE);
         auto aac = media(true), pcm = media(false);
+        check(SUCCEEDED(audio.SetDualMonoMode(DualMono_Main)), "select main before initialization");
         check(SUCCEEDED(audio.SetMediaType(PINDIR_INPUT, &aac)), "initialize AAC");
+        audio.checkDecoderSelection(true);
         HANDLE started = CreateEvent(nullptr, TRUE, FALSE, nullptr), done = CreateEvent(nullptr, TRUE, FALSE, nullptr);
         audio.lockReceive();
         std::thread blocked([&] {
@@ -84,6 +108,9 @@ int wmain(int argc, wchar_t **argv)
         CloseHandle(done);
         check(prompt, "dual mono setter must not wait for the receive lock");
         check(audio.GetDualMonoMode() == DualMono_Sub, "mode published while receive is held");
+        audio.checkDecoderSelection();
+        audio.applyPendingSelection();
+        audio.checkDecoderSelection(true);
         std::atomic<bool> ok{true};
         std::thread changes([&] {
             for (int i = 0; i < 5000; ++i)
@@ -118,11 +145,20 @@ int wmain(int argc, wchar_t **argv)
                 ok = false;
                 break;
             }
+            // Check the decoder, not just the public setting: reinitialization
+            // must not clear a newer request while applying an older snapshot.
+            audio.checkDecoderSelection();
         }
         changes.join();
         check(ok, "concurrent mode changes and decoder reinitialization");
+        check(SUCCEEDED(audio.SetMediaType(PINDIR_INPUT, &aac)), "initialize final AAC decoder");
+        audio.checkDecoderSelection(true);
+        check(SUCCEEDED(audio.SetDualMonoMode(DualMono_Main)), "select main after reinitialization");
+        audio.applyPendingSelection();
+        audio.checkDecoderSelection(true);
         check(audio.SetDualMonoMode(3) == E_INVALIDARG, "invalid mode rejected");
-        puts("PASS: receive lock blocks setter; 5000 mode changes with 1000 decoder reinitializations");
+        puts("PASS: setter never waits for receive; decoder selection is applied or pending across "
+             "5000 mode changes and 1000 decoder reinitializations");
         return 0;
     }
     catch (const std::exception &e)

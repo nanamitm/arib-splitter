@@ -1654,11 +1654,13 @@ HRESULT CLAVAudio::ffmpeg_init(AVCodecID codec, const void *format, const GUID f
     if (ret >= 0)
     {
         m_pFrame = av_frame_alloc();
-        DWORD dwDualMono = GetDualMonoMode();
+        DWORD dwDualMono;
         {
             // A selection made while the decoder was closed is applied here, so
-            // it no longer needs to wait for the next sample.
+            // it no longer needs to wait for the next sample. Snapshot and
+            // acknowledge it together: a newer selection must stay pending.
             CAutoLock lock(&m_csDualMono);
+            dwDualMono = m_settings.DualMonoMode;
             m_bDualMonoPending = FALSE;
         }
         ApplyDualMonoMode(dwDualMono);
