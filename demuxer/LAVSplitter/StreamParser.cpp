@@ -61,7 +61,14 @@ HRESULT CStreamParser::Parse(const GUID &gSubtype, Packet *pPacket)
         Flush();
     }
 
-    if (!pPacket || (pPacket->dwFlags & LAV_PACKET_PARSED))
+    if (!pPacket)
+    {
+        // EOS must follow the last access unit still held by the Annex B parser.
+        if (m_gSubtype == MEDIASUBTYPE_AVC1 && m_pPacketBuffer)
+            ParseH264AnnexB(nullptr);
+        Queue(nullptr);
+    }
+    else if (pPacket->dwFlags & LAV_PACKET_PARSED)
     {
         Queue(pPacket);
     }
@@ -157,12 +164,16 @@ static Packet *InitPacket(Packet *pSource)
 
 HRESULT CStreamParser::ParseH264AnnexB(Packet *pPacket)
 {
+    const bool draining = pPacket == nullptr;
     if (!m_pPacketBuffer)
     {
+        if (draining)
+            return S_OK;
         m_pPacketBuffer = InitPacket(pPacket);
     }
 
-    m_pPacketBuffer->Append(pPacket);
+    if (pPacket)
+        m_pPacketBuffer->Append(pPacket);
 
     BYTE *start = m_pPacketBuffer->GetData();
     BYTE *end = start + m_pPacketBuffer->GetDataSize();
@@ -178,7 +189,10 @@ HRESULT CStreamParser::ParseH264AnnexB(Packet *pPacket)
         // End of buffer reached
         if (next >= end - 4)
         {
-            break;
+            if (!draining)
+                break;
+            // At EOF the buffer end also terminates the final NAL.
+            next = end;
         }
 
         size_t size = next - start;
@@ -228,29 +242,32 @@ HRESULT CStreamParser::ParseH264AnnexB(Packet *pPacket)
 
         m_queue.Queue(p2);
 
-        if (pPacket->rtStart != Packet::INVALID_TIME)
+        if (pPacket && pPacket->rtStart != Packet::INVALID_TIME)
         {
             m_pPacketBuffer->rtStart = pPacket->rtStart;
             m_pPacketBuffer->rtStop = pPacket->rtStop;
             pPacket->rtStart = Packet::INVALID_TIME;
         }
-        if (pPacket->bDiscontinuity)
+        if (pPacket && pPacket->bDiscontinuity)
         {
             m_pPacketBuffer->bDiscontinuity = pPacket->bDiscontinuity;
             pPacket->bDiscontinuity = FALSE;
         }
-        if (pPacket->bSyncPoint)
+        if (pPacket && pPacket->bSyncPoint)
         {
             m_pPacketBuffer->bSyncPoint = pPacket->bSyncPoint;
             pPacket->bSyncPoint = FALSE;
         }
-        if (m_pPacketBuffer->pmt)
+        if (pPacket && m_pPacketBuffer->pmt)
         {
             DeleteMediaType(m_pPacketBuffer->pmt);
         }
 
-        m_pPacketBuffer->pmt = pPacket->pmt;
-        pPacket->pmt = nullptr;
+        if (pPacket)
+        {
+            m_pPacketBuffer->pmt = pPacket->pmt;
+            pPacket->pmt = nullptr;
+        }
 
         start = next;
     }
@@ -318,6 +335,22 @@ HRESULT CStreamParser::ParseH264AnnexB(Packet *pPacket)
             Queue(p);
         }
     } while (pPacket != nullptr);
+
+    if (draining)
+    {
+        // There is no following delimiter to release the final access unit.
+        Packet *last = m_queue.Get();
+        if (last)
+        {
+            while (Packet *nal = m_queue.Get())
+            {
+                last->Append(nal);
+                delete nal;
+            }
+            Queue(last);
+        }
+        SAFE_DELETE(m_pPacketBuffer);
+    }
 
     return S_OK;
 }

@@ -32,6 +32,9 @@ against the production objects, and fails on the first failing test. Use
   unseekable source reports the failure but keeps playing its previous segment. PCM tests check
   mono passthrough and multi-channel interleaving while counting input-buffer
   releases over 3,000 packets.
+  H.264 tests verify that EOF drains the last Annex B NAL and access unit before
+  the end-of-stream notification, preserving timestamps and flags, while a seek
+  flush discards buffered data.
 
 - `property_page_tests.cpp` loads both filter DLLs without registration and tests
   all six filter-owned pages, including Audio Status. It switches dark/light/dark,

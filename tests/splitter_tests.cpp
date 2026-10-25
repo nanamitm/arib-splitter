@@ -282,7 +282,71 @@ struct ParserPinTest : CLAVOutputPin
         check(SUCCEEDED(SetMediaType(&types.front())), "set planar PCM media type");
     }
     Packet *pop() { return m_queue.Get(); }
+    size_t queued() { return m_queue.Size(); }
 };
+
+static void h264EOFTests(CLAVSplitter &filter)
+{
+    CMediaType mt;
+    mt.SetType(&MEDIATYPE_Video);
+    mt.SetSubtype(&MEDIASUBTYPE_AVC1);
+    std::deque<CMediaType> types{mt};
+    HRESULT hr = S_OK;
+    ParserPinTest pin(&filter, types, &hr, CBaseDemuxer::video);
+    CStreamParser parser(&pin, "mpegts");
+    auto feed = [&](const std::vector<BYTE> &bytes, REFERENCE_TIME time) {
+        auto *packet = new Packet();
+        check(packet->SetData(bytes.data(), static_cast<int>(bytes.size())) == 0, "allocate H264 input");
+        packet->StreamId = 42;
+        packet->rtStart = time;
+        packet->rtStop = time + 333667;
+        packet->bSyncPoint = TRUE;
+        packet->bDiscontinuity = TRUE;
+        check(parser.Parse(MEDIASUBTYPE_AVC1, packet) == S_OK, "parse H264 input");
+    };
+    auto expect = [&](const std::vector<BYTE> &bytes, REFERENCE_TIME time) {
+        check(pin.queued() > 0, "H264 output precedes EOS");
+        std::unique_ptr<Packet> packet(pin.pop());
+        check(packet && packet->GetDataSize() == static_cast<int>(bytes.size()) &&
+                  memcmp(packet->GetData(), bytes.data(), bytes.size()) == 0,
+              "H264 output contains every length-prefixed NAL in order");
+        check(packet->StreamId == 42 && packet->rtStart == time && packet->rtStop == time + 333667 &&
+                  packet->bSyncPoint && packet->bDiscontinuity,
+              "H264 output preserves timestamps and flags");
+    };
+    auto expectEOS = [&] {
+        check(pin.queued() == 1 && pin.pop() == nullptr, "exactly one EOS follows the last H264 access unit");
+    };
+
+    // A single NAL never sees a following start code before EOF.
+    for (int prefix : {3, 4})
+    {
+        std::vector<BYTE> bytes(prefix - 1, 0);
+        bytes.insert(bytes.end(), {1, 0x65, 0x88, 0x84, 0x21});
+        feed(bytes, 1000000);
+        check(pin.queued() == 0, "final NAL is held until EOF");
+        parser.Parse(MEDIASUBTYPE_AVC1, nullptr);
+        expect({0, 0, 0, 4, 0x65, 0x88, 0x84, 0x21}, 1000000);
+        expectEOS();
+    }
+
+    // Drain both an already queued AUD/access unit and the final buffered NAL.
+    feed({0, 0, 1, 9, 0xF0, 0, 0, 1, 0x65, 0x88, 0x84, 0x21}, 2000000);
+    feed({0, 0, 1, 9, 0xF0, 0, 0, 1, 0x41, 0x88, 0x84, 0x22}, 2333667);
+    parser.Parse(MEDIASUBTYPE_AVC1, nullptr);
+    expect({0, 0, 0, 2, 9, 0xF0, 0, 0, 0, 4, 0x65, 0x88, 0x84, 0x21}, 2000000);
+    expect({0, 0, 0, 2, 9, 0xF0, 0, 0, 0, 4, 0x41, 0x88, 0x84, 0x22}, 2333667);
+    expectEOS();
+
+    // A seek flush discards old data rather than delivering it at EOF.
+    feed({0, 0, 1, 0x65, 0x88, 0x84, 0x21}, 3000000);
+    parser.Flush();
+    parser.Parse(MEDIASUBTYPE_AVC1, nullptr);
+    expectEOS();
+    parser.Parse(MEDIASUBTYPE_AVC1, nullptr);
+    expectEOS();
+    puts("PASS: H264 EOF drains final NAL/access units with timestamps; flush discards buffered data");
+}
 
 static void freePCM(void *opaque, uint8_t *data)
 {
@@ -487,6 +551,7 @@ int main()
         seekTests();
         unseekableSeekTests();
         pcmTests(filter);
+        h264EOFTests(filter);
         timestampDiscontinuityTests();
         puts("ALL SPLITTER TESTS PASSED");
     }
