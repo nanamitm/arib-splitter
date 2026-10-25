@@ -156,6 +156,9 @@ if $clean_build ; then
 
     ## show configure output
     cat ffbuild/config.out
+    if [ "${CONFIGRETVAL}" -ne 0 ]; then
+        exit "${CONFIGRETVAL}"
+    fi
 fi
 
 ## Only if configure succeeded, actually build

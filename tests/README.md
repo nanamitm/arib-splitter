@@ -49,3 +49,9 @@ against the production objects, and fails on the first failing test. Use
 
 These are native code, property-page and packet-level tests. They do not test MPC-BE's rendered
 subtitle appearance or audible output with recorded broadcast material.
+
+Run `sh tests/ffmpeg_build_tests.sh` from an MSYS2 shell to check the FFmpeg
+build script's failure paths. It runs the production script in a temporary tree
+under `work/` with stub compiler/configure/make commands, verifying configure's
+exit status and diagnostics, make failure, and missing static zlib. It does not
+rebuild FFmpeg or modify the checkout's dependencies or DLLs.
