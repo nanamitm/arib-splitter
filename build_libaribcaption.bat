@@ -11,20 +11,26 @@ cmake -S "%~dp0libaribcaption" -B "%BUILD_DIR%\x64\Release" -A x64 ^
   -DARIBCC_USE_DIRECTWRITE=ON ^
   -DARIBCC_USE_GDI_FONT=OFF ^
   -DARIBCC_NO_RENDERER=OFF ^
-  "-DCMAKE_CXX_FLAGS_RELEASE=/MT /O2 /DNDEBUG" ^
-  "-DCMAKE_C_FLAGS_RELEASE=/MT /O2 /DNDEBUG"
+  -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded ^
+  "-DCMAKE_CXX_FLAGS_RELEASE=/O2 /DNDEBUG" ^
+  "-DCMAKE_C_FLAGS_RELEASE=/O2 /DNDEBUG"
+if errorlevel 1 exit /b 1
 
 cmake --build "%BUILD_DIR%\x64\Release" --config Release
+if errorlevel 1 exit /b 1
 
 cmake -S "%~dp0libaribcaption" -B "%BUILD_DIR%\x64\Debug" -A x64 ^
   -DARIBCC_SHARED_LIBRARY=OFF ^
   -DARIBCC_USE_DIRECTWRITE=ON ^
   -DARIBCC_USE_GDI_FONT=OFF ^
   -DARIBCC_NO_RENDERER=OFF ^
-  "-DCMAKE_CXX_FLAGS_DEBUG=/MDd /Zi /Ob0 /Od /RTC1" ^
-  "-DCMAKE_C_FLAGS_DEBUG=/MDd /Zi /Ob0 /Od /RTC1"
+  -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDebugDLL ^
+  "-DCMAKE_CXX_FLAGS_DEBUG=/Zi /Ob0 /Od /RTC1" ^
+  "-DCMAKE_C_FLAGS_DEBUG=/Zi /Ob0 /Od /RTC1"
+if errorlevel 1 exit /b 1
 
 cmake --build "%BUILD_DIR%\x64\Debug" --config Debug
+if errorlevel 1 exit /b 1
 
 echo.
 echo libaribcaption build complete.
