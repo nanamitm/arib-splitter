@@ -63,6 +63,7 @@ class __declspec(uuid("1AA767C2-BF31-4791-B65A-474678685956")) CLAVSplitter
     , public IAMStreamSelect
     , public IAMOpenProgress
     , public ILAVFSettingsInternal
+    , public ILAVFSettingsEnhancementLayers
     , public ISpecifyPropertyPages2
     , public IObjectWithSite
     , public IBufferInfo
@@ -181,6 +182,10 @@ class __declspec(uuid("1AA767C2-BF31-4791-B65A-474678685956")) CLAVSplitter
     STDMETHODIMP_(DWORD) GetMaxQueueSize();
     STDMETHODIMP SetStreamSwitchReselectSubtitles(BOOL bEnabled);
     STDMETHODIMP_(BOOL) GetStreamSwitchReselectSubtitles();
+
+    // ILAVFSettingsEnhancementLayers
+    STDMETHODIMP SetDemuxVideoEnhancementLayers(BOOL bEnabled);
+    STDMETHODIMP_(BOOL) GetDemuxVideoEnhancementLayers();
 
     // ILAVSplitterSettingsInternal
     STDMETHODIMP_(LPCSTR) GetInputFormat()
@@ -343,6 +348,8 @@ class __declspec(uuid("1AA767C2-BF31-4791-B65A-474678685956")) CLAVSplitter
         DWORD QueueMaxPackets;
         DWORD QueueMaxMemSize;
         DWORD NetworkAnalysisDuration;
+
+        BOOL DemuxEnhancementLayer;
 
         std::map<std::string, BOOL> formats;
     } m_settings;

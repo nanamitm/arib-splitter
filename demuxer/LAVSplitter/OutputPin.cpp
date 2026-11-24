@@ -484,6 +484,7 @@ HRESULT CLAVOutputPin::DeliverPacket(Packet *pPacket)
 {
     HRESULT hr = S_OK;
     IMediaSample *pSample = nullptr;
+    bool bPacketOwnedBySample = false;
 
     long nBytes = (long)pPacket->GetDataSize();
 
@@ -498,8 +499,10 @@ HRESULT CLAVOutputPin::DeliverPacket(Packet *pPacket)
     {
         ILAVMediaSample *pLAVSample = nullptr;
         CHECK_HR(hr = pSample->QueryInterface(&pLAVSample));
-        CHECK_HR(hr = pLAVSample->SetPacket(pPacket));
+        hr = pLAVSample->SetPacket(pPacket);
         SafeRelease(&pLAVSample);
+        CHECK_HR(hr);
+        bPacketOwnedBySample = true;
     }
     else
     {
@@ -541,6 +544,7 @@ HRESULT CLAVOutputPin::DeliverPacket(Packet *pPacket)
         CMediaType pmt = *(pPacket->pmt);
         m_mts.clear();
         m_mts.push_back(pmt);
+        DeleteMediaType(pPacket->pmt);
         pPacket->pmt = nullptr;
 
         SetMediaType(&pmt);
@@ -597,7 +601,7 @@ HRESULT CLAVOutputPin::DeliverPacket(Packet *pPacket)
     }
     CHECK_HR(hr);
 done:
-    if (!m_bPacketAllocator || !pSample)
+    if (!bPacketOwnedBySample)
         SAFE_DELETE(pPacket);
     SafeRelease(&pSample);
     return hr;

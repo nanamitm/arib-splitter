@@ -60,6 +60,7 @@ static FormatMapping video_map[] = {
   { AV_CODEC_ID_CFHD,       &MEDIASUBTYPE_CFHD,         MKTAG('C','F','H','D'), &FORMAT_VideoInfo2 },
   { AV_CODEC_ID_VVC,        &MEDIASUBTYPE_VVC1,         MKTAG('V','V','C','1'), &FORMAT_MPEG2Video },
   { AV_CODEC_ID_WEBP,       &MEDIASUBTYPE_WEBP,         MKTAG('W','E','B','P'), &FORMAT_VideoInfo2 },
+  { AV_CODEC_ID_WEBP_ANIM,  &MEDIASUBTYPE_WEBP_ANIM,    MKTAG('V','P','8','X'), &FORMAT_VideoInfo2 },
   { AV_CODEC_ID_APV,        &MEDIASUBTYPE_APV1,         MKTAG('A','P','V','1'), &FORMAT_VideoInfo2 },
 };
 // clang-format on
@@ -336,6 +337,14 @@ VIDEOINFOHEADER2 *CLAVFVideoHelper::CreateVIH2(const AVStream *avstream, ULONG *
     vih2->bmiHeader.biSize = sizeof(BITMAPINFOHEADER) + extra;
 
     vih2->dwInterlaceFlags = 0;
+    if ((avstream->codecpar->codec_id == AV_CODEC_ID_V210 || avstream->codecpar->codec_id == AV_CODEC_ID_RAWVIDEO) &&
+        avstream->codecpar->field_order > AV_FIELD_PROGRESSIVE)
+    {
+        vih2->dwInterlaceFlags = AMINTERLACE_IsInterlaced | AMINTERLACE_FieldPatBothRegular |
+                                AMINTERLACE_DisplayModeBobOrWeave;
+        if (avstream->codecpar->field_order == AV_FIELD_TT || avstream->codecpar->field_order == AV_FIELD_TB)
+            vih2->dwInterlaceFlags |= AMINTERLACE_Field1First;
+    }
     vih2->dwCopyProtectFlags = 0;
     vih2->dwControlFlags = 0;
     vih2->dwReserved2 = 0;
