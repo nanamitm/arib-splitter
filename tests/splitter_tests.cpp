@@ -143,6 +143,7 @@ struct SeekDemuxer : CBaseDemuxer
     bool IsSeekable() const override { return seekable; }
     const char *GetContainerFormat() const override { return "mpegts"; }
     const stream *SelectVideoStream() override { return nullptr; }
+    const stream *SelectVideoELStream(DWORD) override { return nullptr; }
     const stream *SelectAudioStream(std::list<std::string>) override { return nullptr; }
     const stream *SelectSubtitleStream(std::list<CSubtitleSelector>, std::string) override { return nullptr; }
 };
