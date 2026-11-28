@@ -818,6 +818,19 @@ int wmain(int argc, wchar_t **argv)
     try
     {
         check(argc == 2, "provide splitter DLL path");
+        // AribStreamComponentTag reads FFStream, a private FFmpeg structure.
+        // Even a minor version mismatch can move its fields while the public
+        // DLL ABI remains compatible. Diagnose stale dependencies before tests.
+        const unsigned runtimeVersion = avformat_version();
+        if (runtimeVersion != LIBAVFORMAT_VERSION_INT)
+        {
+            fprintf(stderr,
+                    "FFmpeg version mismatch: libavformat headers=%u.%u.%u, DLL=%u.%u.%u. "
+                    "Rebuild FFmpeg with build_ffmpeg.sh x64, then rebuild ARIBSplitter.\n",
+                    LIBAVFORMAT_VERSION_MAJOR, LIBAVFORMAT_VERSION_MINOR, LIBAVFORMAT_VERSION_MICRO,
+                    runtimeVersion >> 16, (runtimeVersion >> 8) & 0xFF, runtimeVersion & 0xFF);
+            throw std::runtime_error("FFmpeg headers and runtime must match for private FFStream access");
+        }
         CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         HMODULE dll = LoadLibraryExW(argv[1], nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
         check(dll != nullptr, "load built splitter");

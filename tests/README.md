@@ -10,6 +10,13 @@ The script finds Visual Studio C++ tools, builds Release x64, compiles the tests
 against the production objects, and fails on the first failing test. Use
 `-SkipBuild` only when the Release objects already match the checkout.
 
+The FFmpeg DLLs must also match the checked-out FFmpeg headers exactly:
+the EIT audio component lookup reads FFmpeg's private `FFStream` layout,
+which can change between minor versions. The demuxer test reports a version
+mismatch before exercising that code. After updating the FFmpeg submodule,
+run `sh build_ffmpeg.sh x64` in an MSYS2 UCRT64 shell, rebuild libaribcaption
+and the Release x64 solution, then run these tests again.
+
 - `arib_demuxer_tests.cpp` sends synthetic caption PES and A/V packets through
   the real `GetNextPacket()` using a deterministic FFmpeg input format. It checks
   caption hand-over on replacement, hold-interval re-sends, clear timing, EOF,
